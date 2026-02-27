@@ -1,0 +1,41 @@
+// firestore.rules — collection smart_alerts
+// À merger dans vos règles Firestore globales
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function hasRole(role) {
+      return isSignedIn() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == role;
+    }
+
+    function isAdminOrOps() {
+      return hasRole('admin') || hasRole('ops');
+    }
+
+    // ── smart_alerts ──────────────────────────────────────────────
+    match /smart_alerts/{alertId} {
+
+      // Lecture : tous les rôles internes (admin, ops, pilote, agent_sol)
+      allow read: if isSignedIn();
+
+      // Création : admin et ops uniquement (ou Cloud Functions avec admin SDK)
+      allow create: if isAdminOrOps();
+
+      // Mise à jour : admin, ops (acknowledge / resolve)
+      // Restriction : on ne peut pas changer le type, criticality, deduplicationKey
+      allow update: if isAdminOrOps()
+        && !('type' in request.resource.data.diff(resource.data).affectedKeys())
+        && !('deduplicationKey' in request.resource.data.diff(resource.data).affectedKeys());
+
+      // Suppression : admin uniquement
+      allow delete: if hasRole('admin');
+    }
+  }
+}
