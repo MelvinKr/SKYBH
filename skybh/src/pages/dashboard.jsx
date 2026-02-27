@@ -13,6 +13,8 @@ import SmartAlertsPanel from '../components/alerts/smart-alerts-panel'
 import AlertBadge from '../components/alerts/alert-badge'
 import { useAlertEngine } from '../hooks/use-alert-engine'
 import GanttEnhanced from '../components/gantt/gantt-enhanced'
+import MaintenancePage from './maintenance'
+import FleetPage from './fleet'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const AVWX_KEY    = import.meta.env.VITE_AVWX_API_KEY || ''
@@ -400,12 +402,13 @@ export default function Dashboard() {
   }
 
   const TABS = [
-    { id:'overview', icon:'⊞', label:'Vue globale'   },
-    { id:'gantt',    icon:'▦', label:'Planning Gantt' },
-    { id:'fleet',    icon:'✈', label:'Flotte'         },
-    { id:'flights',  icon:'≡', label:'Vols'           },
-    { id:'weather',  icon:'◎', label:'Météo'          },
-    { id:'alerts',   icon:'🔔', label:'Alertes'       },
+    { id:'overview',     icon:'⊞', label:'Vue globale'   },
+    { id:'gantt',        icon:'▦', label:'Planning Gantt' },
+    { id:'fleet',        icon:'✈', label:'Flotte'         },
+    { id:'flights',      icon:'≡', label:'Vols'           },
+    { id:'weather',      icon:'◎', label:'Météo'          },
+    { id:'maintenance',  icon:'🔧', label:'Maintenance'   },
+    { id:'alerts',       icon:'🔔', label:'Alertes'       },
   ]
 
   const hasIfrAlert = maintenanceAlerts.length > 0 || Object.values(weather).some(w => w.status === 'IFR')
@@ -670,46 +673,7 @@ export default function Dashboard() {
             FLOTTE
         ════════════════════════════════════════════════════════ */}
         {tab === 'fleet' && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 style={{color:'#5B8DB8',fontSize:10,fontWeight:700,letterSpacing:3,textTransform:'uppercase'}}>Flotte SBH Commuter</h2>
-                <div className="text-xs mt-0.5" style={{color:'#2D5580'}}>{fleet.length} Cessna C208B Grand Caravan</div>
-              </div>
-              <button onClick={() => setAircraftModal('new')}
-                className="text-xs px-4 py-2 rounded-lg font-bold transition-opacity hover:opacity-90"
-                style={{backgroundColor:'#F0B429',color:'#0B1F3A'}}>
-                + Avion
-              </button>
-            </div>
-            <div className="space-y-3">
-              {fleet.map(a => (
-                <button key={a.id || a.registration} onClick={() => setAircraftModal(a)}
-                  className="w-full rounded-xl border p-5 text-left transition-all hover:border-[#F0B429]/40"
-                  style={{backgroundColor:'#112D52',borderColor:a.status==='maintenance'?'rgba(127,29,29,0.6)':'#1E3A5F'}}>
-                  <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
-                    <div>
-                      <div className="flex items-center gap-3">
-                        <span className="font-mono text-xl font-black text-white">{a.registration}</span>
-                        <StatusDot status={a.status}/>
-                        <span style={{color:'#5B8DB8',fontSize:12}}>{STATUS_LABEL[a.status]}</span>
-                      </div>
-                      <div style={{color:'#5B8DB8',fontSize:11,marginTop:3}}>
-                        {a.type} · MSN {a.msn} · {a.year} · {a.seats} sièges
-                      </div>
-                    </div>
-                    <div style={{color:'#5B8DB8',fontSize:11,padding:'4px 10px',border:'1px solid #1E3A5F',borderRadius:6}}>
-                      ✏️ Modifier
-                    </div>
-                  </div>
-                  <div className="grid sm:grid-cols-2 gap-4">
-                    <PotentialBar current={a.engine_hours}   limit={a.engine_limit}   label="Moteur PT6A-114A"/>
-                    <PotentialBar current={a.airframe_hours} limit={a.airframe_limit} label="Cellule"/>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
+          <FleetPage fleet={fleet} flights={flights} user={user}/>
         )}
 
         {/* ════════════════════════════════════════════════════════
@@ -844,6 +808,13 @@ export default function Dashboard() {
           <div className="rounded-xl border p-5" style={{backgroundColor:'#071729',borderColor:'#1E3A5F',minHeight:400}}>
             <SmartAlertsPanel userId={user?.uid} />
           </div>
+        )}
+
+        {/* ════════════════════════════════════════════════════════
+            MAINTENANCE PRÉDICTIVE
+        ════════════════════════════════════════════════════════ */}
+        {tab === 'maintenance' && (
+          <MaintenancePage fleet={fleet} flights={flights} user={user} />
         )}
 
       </main>
