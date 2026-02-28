@@ -17,6 +17,7 @@ import MaintenancePage from './maintenance'
 import FleetPage from './fleet'
 import FlightsPage from './flights'
 import LiveMap from '../components/live-map/LiveMap'
+import CrewPage from './crew'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const AVWX_KEY    = import.meta.env.VITE_AVWX_API_KEY || ''
@@ -410,6 +411,7 @@ export default function Dashboard() {
     { id:'fleet',        icon:'✈', label:'Flotte'         },
     { id:'flights',      icon:'≡', label:'Vols'           },
     { id:'livemap',      icon:'🗺', label:'Live Map'       },
+    { id:'crew',         icon:'👨‍✈️', label:'Équipage'      },
     { id:'weather',      icon:'◎', label:'Météo'          },
     { id:'maintenance',  icon:'🔧', label:'Maintenance'   },
     { id:'alerts',       icon:'🔔', label:'Alertes'       },
@@ -703,6 +705,10 @@ export default function Dashboard() {
             fullscreen={false}
             onToggleFullscreen={() => setLiveMapFullscreen(true)}
           />
+        )}
+
+        {tab === 'crew' && (
+          <CrewPage flights={flights} user={user}/>
         )}
 
         {/* ════════════════════════════════════════════════════════
