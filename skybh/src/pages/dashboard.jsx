@@ -15,6 +15,8 @@ import { useAlertEngine } from '../hooks/use-alert-engine'
 import GanttEnhanced from '../components/gantt/gantt-enhanced'
 import MaintenancePage from './maintenance'
 import FleetPage from './fleet'
+import FlightsPage from './flights'
+import LiveMap from '../components/live-map/LiveMap'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const AVWX_KEY    = import.meta.env.VITE_AVWX_API_KEY || ''
@@ -300,6 +302,7 @@ export default function Dashboard() {
   const { flights: fsFlights, kpis: fsKpis } = useFlights()
 
   const [tab,            setTab]            = useState('overview')
+  const [liveMapFullscreen, setLiveMapFullscreen] = useState(false)
   const [time,           setTime]           = useState(new Date())
   const [weather,        setWeather]        = useState(WEATHER_MOCK)
   const [weatherLoading, setWeatherLoading] = useState(false)
@@ -406,6 +409,7 @@ export default function Dashboard() {
     { id:'gantt',        icon:'▦', label:'Planning Gantt' },
     { id:'fleet',        icon:'✈', label:'Flotte'         },
     { id:'flights',      icon:'≡', label:'Vols'           },
+    { id:'livemap',      icon:'🗺', label:'Live Map'       },
     { id:'weather',      icon:'◎', label:'Météo'          },
     { id:'maintenance',  icon:'🔧', label:'Maintenance'   },
     { id:'alerts',       icon:'🔔', label:'Alertes'       },
@@ -680,72 +684,25 @@ export default function Dashboard() {
             VOLS
         ════════════════════════════════════════════════════════ */}
         {tab === 'flights' && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <div>
-                <h2 style={{color:'#5B8DB8',fontSize:10,fontWeight:700,letterSpacing:3,textTransform:'uppercase'}}>
-                  Rotations du jour
-                </h2>
-                <div className="text-xs mt-0.5" style={{color:'#2D5580'}}>
-                  {flights.length} vols · {kpis.completed} atterris · {kpis.inFlight} en vol
-                </div>
-              </div>
-              <button onClick={() => setFlightModal({})}
-                className="text-xs px-4 py-2 rounded-lg font-bold transition-opacity hover:opacity-90"
-                style={{backgroundColor:'#F0B429',color:'#0B1F3A'}}>
-                + Nouveau vol
-              </button>
-            </div>
+          <FlightsPage
+            flights={flights}
+            fleet={fleet}
+            user={user}
+            onCreateFlight={() => setFlightModal({})}
+          />
+        )}
 
-            {flights.map(f => {
-              const sc  = STATUS_COLORS[f.status] || STATUS_COLORS.scheduled
-              const dep = toDate(f.departure_time)
-              const arr = toDate(f.arrival_time)
-              const isFull = f.pax_count >= f.max_pax
-              return (
-                <button key={f.id} onClick={() => setFlightModal(f)}
-                  className="w-full rounded-xl border p-4 text-left transition-all hover:border-[#F0B429]/40"
-                  style={{
-                    backgroundColor: f.status==='in_flight' ? 'rgba(90,60,0,0.2)' : '#112D52',
-                    borderColor:     f.status==='in_flight' ? '#F0B429'
-                                   : f.status==='cancelled' ? 'rgba(127,29,29,0.6)' : '#1E3A5F',
-                  }}>
-                  <div className="flex flex-wrap items-center gap-3">
-                    <span className="font-mono font-black text-sm w-14 shrink-0" style={{color:'#F0B429'}}>
-                      {f.flight_number}
-                    </span>
-                    <div className="flex items-center gap-2 flex-1 min-w-0">
-                      <div className="min-w-0">
-                        <div className="font-bold text-white text-sm">{AIRPORTS_FULL[f.origin]?.short || f.origin}</div>
-                        <div style={{color:'#5B8DB8',fontSize:9}} className="truncate">{AIRPORTS_FULL[f.origin]?.name}</div>
-                      </div>
-                      <span style={{color:'#1E3A5F',fontSize:16,flexShrink:0}}>→</span>
-                      <div className="min-w-0">
-                        <div className="font-bold text-white text-sm">{AIRPORTS_FULL[f.destination]?.short || f.destination}</div>
-                        <div style={{color:'#5B8DB8',fontSize:9}} className="truncate">{AIRPORTS_FULL[f.destination]?.name}</div>
-                      </div>
-                    </div>
-                    <div className="font-mono text-xs shrink-0" style={{color:'#5B8DB8'}}>
-                      {fmtTime(dep)} → {fmtTime(arr)}
-                    </div>
-                    <div className="hidden sm:flex items-center gap-3 shrink-0">
-                      <span style={{color:'#2D5580',fontSize:11,fontFamily:'monospace'}}>{f.aircraft}</span>
-                      {f.pilot && <span style={{color:'#2D5580',fontSize:11}}>✈ {f.pilot}</span>}
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-xs font-bold" style={{color:sc.text}}>{FLIGHT_STATUS_LABELS[f.status]}</span>
-                      <span style={{color:'#5B8DB8',fontSize:11}}>{f.pax_count}/{f.max_pax}</span>
-                      {isFull && (
-                        <span className="text-xs px-1.5 py-0.5 rounded font-bold" style={{backgroundColor:'#064E3B',color:'#6EE7B7'}}>
-                          FULL
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </button>
-              )
-            })}
-          </div>
+        {/* ════════════════════════════════════════════════════════
+            LIVE MAP
+        ════════════════════════════════════════════════════════ */}
+        {tab === 'livemap' && (
+          <LiveMap
+            flights={flights}
+            fleet={fleet}
+            user={user}
+            fullscreen={false}
+            onToggleFullscreen={() => setLiveMapFullscreen(true)}
+          />
         )}
 
         {/* ════════════════════════════════════════════════════════
@@ -818,6 +775,22 @@ export default function Dashboard() {
         )}
 
       </main>
+
+      {/* ── LIVE MAP PLEIN ÉCRAN ── */}
+      {liveMapFullscreen && (
+        <div style={{
+          position:'fixed', inset:0, zIndex:500,
+          backgroundColor:'#071118', display:'flex', flexDirection:'column',
+        }}>
+          <LiveMap
+            flights={flights}
+            fleet={fleet}
+            user={user}
+            fullscreen={true}
+            onToggleFullscreen={() => setLiveMapFullscreen(false)}
+          />
+        </div>
+      )}
 
       {/* ── FOOTER ── */}
       <footer className="border-t mt-12 py-4 text-center" style={{borderColor:'#1E3A5F'}}>
