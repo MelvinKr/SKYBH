@@ -1,77 +1,58 @@
+// src/context/AuthContext.jsx
 import { createContext, useContext, useEffect, useState } from 'react'
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth'
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut, reload } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
-import { auth, db } from '../services/firebase'
+import { auth, db } from '../services/firebase'   // ← instances déjà initialisées
 
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null)
-  const [role, setRole] = useState(null)
+  const [user,    setUser]    = useState(null)
+  const [role,    setRole]    = useState(null)
   const [loading, setLoading] = useState(true)
 
+  const loadRole = async (firebaseUser) => {
+    if (!firebaseUser) { setRole(null); return }
+    try {
+      const snap = await getDoc(doc(db, 'users', firebaseUser.uid))
+      setRole(snap.exists() ? (snap.data().role || 'ops') : 'ops')
+    } catch {
+      setRole('ops')
+    }
+  }
+
+  // Force le rechargement de l'objet user après updateProfile()
+  const refreshUser = async () => {
+    if (!auth.currentUser) return
+    try {
+      await reload(auth.currentUser)
+      setUser({ ...auth.currentUser })
+    } catch (e) {
+      console.error('refreshUser error:', e)
+    }
+  }
+
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        // Récupère le rôle depuis Firestore
-        try {
-          const docRef = doc(db, 'users', firebaseUser.uid)
-          const docSnap = await getDoc(docRef)
-          if (docSnap.exists()) {
-            setRole(docSnap.data().role)
-          }
-        } catch (error) {
-          console.error('Erreur récupération rôle:', error)
-          setRole(null)
-        }
-        setUser(firebaseUser)
-      } else {
-        setUser(null)
-        setRole(null)
-      }
+    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+      setUser(firebaseUser ? { ...firebaseUser } : null)
+      await loadRole(firebaseUser)
       setLoading(false)
     })
-
-    return () => unsubscribe()
+    return unsub
   }, [])
 
-  const login = async (email, password) => {
-    try {
-      await signInWithEmailAndPassword(auth, email, password)
-    } catch (error) {
-      throw new Error(getFirebaseErrorMessage(error.code))
-    }
-  }
-
-  const logout = async () => {
-    try {
-      await signOut(auth)
-    } catch (error) {
-      throw new Error('Erreur lors de la déconnexion')
-    }
-  }
+  const logout = () => signOut(auth)
+  const login  = (email, password) => signInWithEmailAndPassword(auth, email, password)
 
   return (
-    <AuthContext.Provider value={{ user, role, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, role, loading, login, logout, refreshUser }}>
       {!loading && children}
     </AuthContext.Provider>
   )
 }
 
-export function useAuth() {
-  const context = useContext(AuthContext)
-  if (!context) throw new Error('useAuth doit être utilisé dans AuthProvider')
-  return context
-}
-
-// Messages d'erreur Firebase en français
-function getFirebaseErrorMessage(code) {
-  const messages = {
-    'auth/user-not-found': 'Utilisateur introuvable',
-    'auth/wrong-password': 'Mot de passe incorrect',
-    'auth/invalid-email': 'Email invalide',
-    'auth/too-many-requests': 'Trop de tentatives, réessayez plus tard',
-    'auth/invalid-credential': 'Identifiants incorrects',
-  }
-  return messages[code] || 'Erreur de connexion'
+export const useAuth = () => {
+  const ctx = useContext(AuthContext)
+  if (!ctx) throw new Error('useAuth doit être utilisé dans AuthProvider')
+  return ctx
 }
