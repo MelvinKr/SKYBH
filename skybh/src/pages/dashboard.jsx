@@ -1036,13 +1036,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* ════════════════════════
-            AUDIT
-        ════════════════════════ */}
-        {activeSection === 'audit' && (
-          <AuditPage user={user}/>
-        )}
-
       </main>
 
       {/* ── PROFIL UTILISATEUR ── */}
