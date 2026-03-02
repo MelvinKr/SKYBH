@@ -61,7 +61,7 @@ const WEATHER_MOCK = {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const toDate  = ts => ts?.toDate ? ts.toDate() : new Date(ts)
 const fmtTime = d  => d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' })
-const SBH_TZ    = 'America/St_Barthelemy'          // AST — UTC-4, pas de DST
+const SBH_TZ    = 'America/St_Barthelemy'
 const fmtClock  = d  => d.toLocaleTimeString('fr-FR',  { hour:'2-digit', minute:'2-digit', second:'2-digit', timeZone: SBH_TZ })
 const fmtDate   = d  => d.toLocaleDateString('fr-FR',  { weekday:'long', day:'numeric', month:'long', timeZone: SBH_TZ })
 const fmtTZ     = () => 'AST · UTC−4'
@@ -328,8 +328,6 @@ export default function Dashboard() {
     fillRate:  Math.round(MOCK_FLIGHTS.reduce((s,f)=>s+f.pax_count,0) / MOCK_FLIGHTS.reduce((s,f)=>s+f.max_pax,0) * 100),
   }
 
-  // ── Moteur d'alertes intelligentes ───────────────────────────────────────────
-  // Analyse la flotte + les vols + la météo et persiste les alertes dans Firestore
   useAlertEngine({
     fleet,
     flights,
@@ -413,15 +411,9 @@ export default function Dashboard() {
   }
 
   const NAV = [
+    { id: 'dashboard',  icon: '⊞', label: 'Dashboard' },
     {
-      id: 'dashboard',
-      icon: '⊞',
-      label: 'Dashboard',
-    },
-    {
-      id: 'planning',
-      icon: '▦',
-      label: 'Planning',
+      id: 'planning', icon: '▦', label: 'Planning',
       subs: [
         { id: 'gantt',   label: 'Gantt'    },
         { id: 'flights', label: 'Vols'     },
@@ -429,48 +421,35 @@ export default function Dashboard() {
       ],
     },
     {
-      id: 'fleet',
-      icon: '✈',
-      label: 'Flotte',
+      id: 'fleet', icon: '✈', label: 'Flotte',
       subs: [
-        { id: 'aircraft',     label: 'Appareils'   },
-        { id: 'maintenance',  label: 'Maintenance' },
+        { id: 'aircraft',    label: 'Appareils'   },
+        { id: 'maintenance', label: 'Maintenance' },
       ],
     },
     {
-      id: 'operations',
-      icon: '🗺',
-      label: 'Opérations',
+      id: 'operations', icon: '🗺', label: 'Opérations',
       subs: [
         { id: 'livemap', label: 'Live Map' },
         { id: 'weather', label: 'Météo'   },
       ],
     },
-    {
-      id: 'alerts',
-      icon: '🔔',
-      label: 'Alertes',
-    },
+    { id: 'alerts', icon: '🔔', label: 'Alertes' },
   ]
 
-  // sub-tab par section
   const [subTab, setSubTab] = useState({
     planning:   'gantt',
     fleet:      'aircraft',
     operations: 'livemap',
   })
 
-  const setMainTab = (id) => {
-    setTab(id)
-  }
+  const setMainTab = (id) => setTab(id)
 
   const setSubTabFor = (section, sub) => {
     setSubTab(s => ({ ...s, [section]: sub }))
     setTab(section)
   }
 
-  // Compat legacy : certains appels font setTab('flights') ou setTab('fleet')
-  // On reroute vers la bonne section + sous-onglet
   const resolveTab = (rawTab) => {
     const legacyMap = {
       overview:    ['dashboard', null],
@@ -485,18 +464,27 @@ export default function Dashboard() {
     return legacyMap[rawTab] || [rawTab, null]
   }
 
-  // Tab effectif résolu
   const [_section, _sub] = resolveTab(tab)
   const activeSection = _section
-  const activeSub     = _sub
-    ? _sub
-    : (subTab[_section] || null)
+  const activeSub     = _sub ? _sub : (subTab[_section] || null)
 
-  const TABS = NAV // kept for compat reference
   const hasIfrAlert = maintenanceAlerts.length > 0 || Object.values(weather).some(w => w.status === 'IFR')
 
   return (
     <div className="min-h-screen text-white" style={{backgroundColor:'#0B1F3A',fontFamily:"'Segoe UI',system-ui,sans-serif"}}>
+
+      {/* ── STYLES GLOBAUX ── */}
+      <style>{`
+        @keyframes navPulse {
+          0%,100%{opacity:1;transform:scale(1);}
+          50%{opacity:0.4;transform:scale(1.6);}
+        }
+        @keyframes dropIn {
+          from { opacity:0; transform:translateY(-6px) scale(0.97); }
+          to   { opacity:1; transform:translateY(0)    scale(1);    }
+        }
+        .nav-scroll::-webkit-scrollbar { display: none; }
+      `}</style>
 
       {/* ── MODALES ── */}
       {flightModal && (
@@ -519,7 +507,7 @@ export default function Dashboard() {
       <header className="sticky top-0 z-40 border-b" style={{backgroundColor:'#071729',borderColor:'#1E3A5F'}}>
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
 
-          {/* Logo + nom */}
+          {/* Logo */}
           <div className="flex items-center gap-3 shrink-0">
             <img src="/logo-sbh.png" alt="SBH" className="h-9 w-auto" onError={e => e.target.style.display='none'}/>
             <div>
@@ -528,23 +516,22 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Horloge */}
+          {/* Horloge — masquée sur mobile */}
           <div className="hidden sm:block text-center">
             <div className="font-mono text-xl font-black" style={{color:'#F0B429'}}>{fmtClock(time)}</div>
             <div className="text-xs capitalize" style={{color:'#5B8DB8'}}>{fmtDate(time)}</div>
             <div style={{fontSize:9,fontWeight:700,letterSpacing:'0.1em',color:'#2D5580',marginTop:1,textTransform:'uppercase'}}>{fmtTZ()}</div>
           </div>
 
-          {/* ── Zone utilisateur : alerte + avatar dropdown ── */}
+          {/* Zone utilisateur */}
           <div className="flex items-center gap-3 shrink-0">
 
-            {/* Cloche alertes — compacte */}
+            {/* Cloche alertes */}
             <button
               onClick={() => setMainTab('alerts')}
               style={{
                 position: 'relative',
-                width: 36, height: 36,
-                borderRadius: '50%',
+                width: 36, height: 36, borderRadius: '50%',
                 border: `1px solid ${hasIfrAlert ? 'rgba(239,68,68,0.5)' : '#1E3A5F'}`,
                 backgroundColor: hasIfrAlert ? 'rgba(239,68,68,0.08)' : 'transparent',
                 cursor: 'pointer',
@@ -557,8 +544,7 @@ export default function Dashboard() {
                 <span style={{
                   position: 'absolute', top: 5, right: 5,
                   width: 7, height: 7, borderRadius: '50%',
-                  backgroundColor: '#EF4444',
-                  boxShadow: '0 0 6px #EF4444',
+                  backgroundColor: '#EF4444', boxShadow: '0 0 6px #EF4444',
                   animation: 'navPulse 1.8s ease-in-out infinite',
                 }}/>
               )}
@@ -570,15 +556,13 @@ export default function Dashboard() {
                 onClick={() => setUserMenuOpen(o => !o)}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 9,
-                  padding: '5px 5px 5px 5px',
+                  padding: '5px',
                   borderRadius: 40,
                   border: `1px solid ${userMenuOpen ? '#F0B429' : '#1E3A5F'}`,
                   backgroundColor: userMenuOpen ? 'rgba(240,180,41,0.06)' : 'transparent',
-                  cursor: 'pointer',
-                  transition: 'all 0.15s',
+                  cursor: 'pointer', transition: 'all 0.15s',
                 }}
               >
-                {/* Avatar cercle initiale */}
                 <div style={{
                   width: 32, height: 32, borderRadius: '50%',
                   background: 'linear-gradient(135deg, #1E3A5F 0%, #2D5580 100%)',
@@ -586,164 +570,86 @@ export default function Dashboard() {
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   flexShrink: 0,
                 }}>
-                  <span style={{
-                    fontSize: 13, fontWeight: 900, color: '#F0B429',
-                    fontFamily: 'monospace', lineHeight: 1,
-                  }}>
+                  <span style={{ fontSize: 13, fontWeight: 900, color: '#F0B429', fontFamily: 'monospace', lineHeight: 1 }}>
                     {(user?.email?.[0] || 'U').toUpperCase()}
                   </span>
                 </div>
-
-                {/* Role pill — masqué sur mobile */}
                 <span className="hidden sm:block" style={{
-                  fontSize: 9, fontWeight: 800,
-                  color: '#F0B429',
-                  letterSpacing: '0.12em',
-                  textTransform: 'uppercase',
-                  paddingRight: 4,
+                  fontSize: 9, fontWeight: 800, color: '#F0B429',
+                  letterSpacing: '0.12em', textTransform: 'uppercase', paddingRight: 4,
                 }}>
                   {role || 'USER'}
                 </span>
-
-                {/* Chevron */}
                 <span style={{
-                  fontSize: 9, color: '#2D5580',
-                  paddingRight: 6,
+                  fontSize: 9, color: '#2D5580', paddingRight: 6,
                   transform: userMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-                  transition: 'transform 0.2s',
-                  display: 'block',
+                  transition: 'transform 0.2s', display: 'block',
                 }}>▼</span>
               </button>
 
-              {/* ── Dropdown menu ── */}
+              {/* Dropdown */}
               {userMenuOpen && (
                 <>
-                  {/* Overlay transparent pour fermer */}
-                  <div
-                    style={{ position: 'fixed', inset: 0, zIndex: 98 }}
-                    onClick={() => setUserMenuOpen(false)}
-                  />
+                  <div style={{ position: 'fixed', inset: 0, zIndex: 98 }} onClick={() => setUserMenuOpen(false)}/>
                   <div style={{
                     position: 'absolute', top: 'calc(100% + 8px)', right: 0,
-                    zIndex: 99,
-                    width: 220,
+                    zIndex: 99, width: 220,
                     backgroundColor: '#0A1E36',
-                    border: '1px solid #1E3A5F',
-                    borderRadius: 14,
+                    border: '1px solid #1E3A5F', borderRadius: 14,
                     boxShadow: '0 16px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(240,180,41,0.06)',
-                    overflow: 'hidden',
-                    animation: 'dropIn 0.15s ease-out',
+                    overflow: 'hidden', animation: 'dropIn 0.15s ease-out',
                   }}>
-                    {/* En-tête dropdown */}
-                    <div style={{
-                      padding: '14px 16px 12px',
-                      borderBottom: '1px solid #1E3A5F',
-                    }}>
+                    <div style={{ padding: '14px 16px 12px', borderBottom: '1px solid #1E3A5F' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <div style={{
                           width: 38, height: 38, borderRadius: '50%',
                           background: 'linear-gradient(135deg, #1E3A5F 0%, #2D5580 100%)',
                           border: '2px solid #F0B429',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          flexShrink: 0,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                         }}>
                           <span style={{ fontSize: 15, fontWeight: 900, color: '#F0B429', fontFamily: 'monospace' }}>
                             {(user?.email?.[0] || 'U').toUpperCase()}
                           </span>
                         </div>
                         <div style={{ minWidth: 0 }}>
-                          <div style={{
-                            fontSize: 12, fontWeight: 700, color: '#F1F5F9',
-                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                          }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: '#F1F5F9', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {user?.email || 'Utilisateur'}
                           </div>
-                          <div style={{
-                            fontSize: 9, fontWeight: 800, color: '#F0B429',
-                            letterSpacing: '0.12em', textTransform: 'uppercase', marginTop: 2,
-                          }}>
+                          <div style={{ fontSize: 9, fontWeight: 800, color: '#F0B429', letterSpacing: '0.12em', textTransform: 'uppercase', marginTop: 2 }}>
                             {role || 'USER'}
                           </div>
                         </div>
                       </div>
                     </div>
-
-                    {/* Items menu */}
                     <div style={{ padding: '6px 0' }}>
                       {[
-                        {
-                          icon: '👤',
-                          label: 'Mon profil',
-                          sub: 'Paramètres & photo',
-                          action: () => { setUserMenuOpen(false); setProfileOpen(true) },
-                        },
-                        {
-                          icon: '🔍',
-                          label: 'Audit Trail',
-                          sub: 'Traçabilité & logs',
-                          action: () => { setMainTab('audit'); setUserMenuOpen(false) },
-                        },
-                        {
-                          icon: '🔔',
-                          label: 'Alertes',
-                          sub: hasIfrAlert ? '⚠ Alertes actives' : 'Tout est nominal',
-                          subColor: hasIfrAlert ? '#F87171' : '#475569',
-                          action: () => { setMainTab('alerts'); setUserMenuOpen(false) },
-                        },
+                        { icon: '👤', label: 'Mon profil',  sub: 'Paramètres & photo',                          action: () => { setUserMenuOpen(false); setProfileOpen(true) } },
+                        { icon: '🔍', label: 'Audit Trail', sub: 'Traçabilité & logs',                          action: () => { setMainTab('audit'); setUserMenuOpen(false) } },
+                        { icon: '🔔', label: 'Alertes',     sub: hasIfrAlert ? '⚠ Alertes actives' : 'Tout est nominal', subColor: hasIfrAlert ? '#F87171' : '#475569', action: () => { setMainTab('alerts'); setUserMenuOpen(false) } },
                       ].map((item, i) => (
                         <button key={i} onClick={item.action}
-                          style={{
-                            width: '100%', display: 'flex', alignItems: 'center', gap: 11,
-                            padding: '9px 16px',
-                            border: 'none', cursor: 'pointer',
-                            backgroundColor: 'transparent',
-                            textAlign: 'left',
-                            transition: 'background 0.1s',
-                          }}
+                          style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 16px', border: 'none', cursor: 'pointer', backgroundColor: 'transparent', textAlign: 'left', transition: 'background 0.1s' }}
                           onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(30,58,95,0.4)'}
                           onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
                         >
-                          <span style={{ fontSize: 15, width: 20, textAlign: 'center', flexShrink: 0 }}>
-                            {item.icon}
-                          </span>
+                          <span style={{ fontSize: 15, width: 20, textAlign: 'center', flexShrink: 0 }}>{item.icon}</span>
                           <div>
-                            <div style={{ fontSize: 12, fontWeight: 600, color: '#F1F5F9' }}>
-                              {item.label}
-                            </div>
-                            <div style={{ fontSize: 10, color: item.subColor || '#475569', marginTop: 1 }}>
-                              {item.sub}
-                            </div>
+                            <div style={{ fontSize: 12, fontWeight: 600, color: '#F1F5F9' }}>{item.label}</div>
+                            <div style={{ fontSize: 10, color: item.subColor || '#475569', marginTop: 1 }}>{item.sub}</div>
                           </div>
                         </button>
                       ))}
-
-                      {/* Séparateur */}
                       <div style={{ height: 1, backgroundColor: '#1E3A5F', margin: '4px 0' }}/>
-
-                      {/* Déconnexion */}
                       <button
                         onClick={() => { setUserMenuOpen(false); logout() }}
-                        style={{
-                          width: '100%', display: 'flex', alignItems: 'center', gap: 11,
-                          padding: '9px 16px',
-                          border: 'none', cursor: 'pointer',
-                          backgroundColor: 'transparent',
-                          textAlign: 'left',
-                          transition: 'background 0.1s',
-                        }}
+                        style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: '9px 16px', border: 'none', cursor: 'pointer', backgroundColor: 'transparent', textAlign: 'left', transition: 'background 0.1s' }}
                         onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(239,68,68,0.08)'}
                         onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
                       >
-                        <span style={{ fontSize: 15, width: 20, textAlign: 'center', flexShrink: 0, color: '#EF4444' }}>
-                          ↩
-                        </span>
+                        <span style={{ fontSize: 15, width: 20, textAlign: 'center', flexShrink: 0, color: '#EF4444' }}>↩</span>
                         <div>
-                          <div style={{ fontSize: 12, fontWeight: 600, color: '#F87171' }}>
-                            Déconnexion
-                          </div>
-                          <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>
-                            Fermer la session
-                          </div>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: '#F87171' }}>Déconnexion</div>
+                          <div style={{ fontSize: 10, color: '#475569', marginTop: 1 }}>Fermer la session</div>
                         </div>
                       </button>
                     </div>
@@ -756,13 +662,22 @@ export default function Dashboard() {
       </header>
 
       {/* ── NAVIGATION PRINCIPALE ── */}
-      <nav style={{
-        backgroundColor: '#071729',
-        borderBottom: '1px solid #1E3A5F',
-        position: 'sticky', top: 57, zIndex: 30,
-      }}>
-        {/* Barre principale — 5 items */}
-        <div style={{ maxWidth: 1280, margin: '0 auto', padding: '0 16px', display: 'flex', alignItems: 'stretch' }}>
+      <nav style={{ backgroundColor: '#071729', borderBottom: '1px solid #1E3A5F', position: 'sticky', top: 57, zIndex: 30 }}>
+        {/*
+          ✅ FIX MOBILE : overflowX auto + flexShrink 0 sur chaque bouton
+          → scroll horizontal natif, scrollbar invisible
+        */}
+        <div
+          className="nav-scroll"
+          style={{
+            maxWidth: 1280, margin: '0 auto',
+            display: 'flex', alignItems: 'stretch',
+            overflowX: 'auto',
+            WebkitOverflowScrolling: 'touch',
+            scrollbarWidth: 'none',
+            msOverflowStyle: 'none',
+          }}
+        >
           {NAV.map(item => {
             const isActive = activeSection === item.id
             const alertDot = item.id === 'alerts' && hasIfrAlert && !isActive
@@ -771,14 +686,15 @@ export default function Dashboard() {
                 key={item.id}
                 onClick={() => setMainTab(item.id)}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 7,
-                  padding: '0 22px', height: 46,
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '0 16px', height: 46,
                   fontSize: 12, fontWeight: 700, letterSpacing: '0.04em',
                   whiteSpace: 'nowrap',
+                  flexShrink: 0,          /* ← empêche la compression */
                   border: 'none', cursor: 'pointer',
                   position: 'relative',
                   backgroundColor: 'transparent',
-                  color:       isActive ? '#F0B429' : '#5B8DB8',
+                  color:        isActive ? '#F0B429' : '#5B8DB8',
                   borderBottom: `2px solid ${isActive ? '#F0B429' : 'transparent'}`,
                   transition: 'color 0.15s, border-color 0.15s',
                 }}
@@ -787,7 +703,7 @@ export default function Dashboard() {
                 {item.label}
                 {alertDot && (
                   <span style={{
-                    position: 'absolute', top: 9, right: 10,
+                    position: 'absolute', top: 9, right: 6,
                     width: 7, height: 7, borderRadius: '50%',
                     backgroundColor: '#EF4444', boxShadow: '0 0 7px #EF4444',
                     animation: 'navPulse 1.8s ease-in-out infinite',
@@ -796,7 +712,8 @@ export default function Dashboard() {
               </button>
             )
           })}
-          <div style={{ flex: 1 }}/>
+          {/* Spacer flexible — pousse Audit à droite sur desktop */}
+          <div style={{ flex: 1, minWidth: 8 }}/>
           <button
             onClick={() => setMainTab('audit')}
             style={{
@@ -808,27 +725,17 @@ export default function Dashboard() {
               color: activeSection === 'audit' ? '#F0B429' : '#2D5580',
               borderBottom: `2px solid ${activeSection === 'audit' ? '#F0B429' : 'transparent'}`,
               letterSpacing: '0.04em',
+              whiteSpace: 'nowrap', flexShrink: 0,
             }}
           >
             🔍 Audit
           </button>
         </div>
-
       </nav>
-      <style>{`
-        @keyframes navPulse {
-          0%,100%{opacity:1;transform:scale(1);}
-          50%{opacity:0.4;transform:scale(1.6);}
-        }
-        @keyframes dropIn {
-          from { opacity:0; transform:translateY(-6px) scale(0.97); }
-          to   { opacity:1; transform:translateY(0)    scale(1);    }
-        }
-      `}</style>
 
       <main className="max-w-7xl mx-auto px-4 py-6 space-y-5">
 
-                {/* ── BANDEAU ALERTES MAINTENANCE (visible partout sauf onglet Alertes) ── */}
+        {/* ── BANDEAU ALERTES MAINTENANCE ── */}
         {maintenanceAlerts.length > 0 && activeSection !== 'alerts' && (
           <div className="rounded-xl border p-4" style={{backgroundColor:'rgba(127,29,29,0.12)',borderColor:'rgba(127,29,29,0.6)'}}>
             <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
@@ -875,10 +782,10 @@ export default function Dashboard() {
         {activeSection === 'dashboard' && (
           <div className="space-y-5">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <KPICard label="Vols du jour"   value={kpis.total}         color="#FFFFFF"  icon="✈"  sub={`${kpis.completed} atterris`}/>
-              <KPICard label="En vol"         value={kpis.inFlight}      color="#F0B429"  icon="🛫" sub="temps réel"/>
-              <KPICard label="Passagers"      value={kpis.totalPax}      color="#7DD3FC"  icon="👥" sub="aujourd'hui"/>
-              <KPICard label="Remplissage"    value={`${kpis.fillRate}%`} color="#4ADE80" icon="📊" sub={`${kpis.cancelled||0} annulé(s)`}/>
+              <KPICard label="Vols du jour"   value={kpis.total}          color="#FFFFFF"  icon="✈"  sub={`${kpis.completed} atterris`}/>
+              <KPICard label="En vol"         value={kpis.inFlight}       color="#F0B429"  icon="🛫" sub="temps réel"/>
+              <KPICard label="Passagers"      value={kpis.totalPax}       color="#7DD3FC"  icon="👥" sub="aujourd'hui"/>
+              <KPICard label="Remplissage"    value={`${kpis.fillRate}%`} color="#4ADE80"  icon="📊" sub={`${kpis.cancelled||0} annulé(s)`}/>
             </div>
 
             <div>
@@ -962,30 +869,17 @@ export default function Dashboard() {
         )}
 
         {/* ════════════════════════
-            2. PLANNING — tabs intégrés dans le contenu
+            2. PLANNING
         ════════════════════════ */}
         {activeSection === 'planning' && (
           <div>
-            {/* En-tête section + tabs inline */}
             <div style={{ marginBottom: 24 }}>
-              <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
-                flexWrap: 'wrap', gap: 12, marginBottom: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 0 }}>
                 <div>
-                  <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.15em',
-                    textTransform: 'uppercase', color: '#2D5580', margin: '0 0 4px' }}>
-                    SBH Commuter
-                  </p>
-                  <h1 style={{ fontSize: 22, fontWeight: 900, color: '#F1F5F9', margin: 0, letterSpacing: '-0.02em' }}>
-                    Planning
-                  </h1>
+                  <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: '#2D5580', margin: '0 0 4px' }}>SBH Commuter</p>
+                  <h1 style={{ fontSize: 22, fontWeight: 900, color: '#F1F5F9', margin: 0, letterSpacing: '-0.02em' }}>Planning</h1>
                 </div>
-                {/* Tabs pill — intégrés au titre, pas en navbar */}
-                <div style={{
-                  display: 'flex', gap: 3, padding: '4px',
-                  backgroundColor: 'rgba(15,39,69,0.8)',
-                  borderRadius: 12,
-                  border: '1px solid #1E3A5F',
-                }}>
+                <div style={{ display: 'flex', gap: 3, padding: '4px', backgroundColor: 'rgba(15,39,69,0.8)', borderRadius: 12, border: '1px solid #1E3A5F' }}>
                   {[
                     { id: 'gantt',   label: '▦ Gantt'     },
                     { id: 'flights', label: '≡ Vols'       },
@@ -993,10 +887,8 @@ export default function Dashboard() {
                   ].map(t => (
                     <button key={t.id} onClick={() => setSubTabFor('planning', t.id)}
                       style={{
-                        padding: '7px 18px', borderRadius: 9,
-                        fontSize: 12, fontWeight: 700,
-                        border: 'none', cursor: 'pointer',
-                        transition: 'all 0.15s',
+                        padding: '7px 18px', borderRadius: 9, fontSize: 12, fontWeight: 700,
+                        border: 'none', cursor: 'pointer', transition: 'all 0.15s',
                         backgroundColor: activeSub === t.id ? '#F0B429' : 'transparent',
                         color:           activeSub === t.id ? '#0B1F3A' : '#5B8DB8',
                         boxShadow:       activeSub === t.id ? '0 2px 8px rgba(240,180,41,0.3)' : 'none',
@@ -1006,30 +898,16 @@ export default function Dashboard() {
                   ))}
                 </div>
               </div>
-              {/* Ligne séparatrice fine */}
               <div style={{ height: 1, backgroundColor: '#1E3A5F', marginTop: 16 }}/>
             </div>
-
-            {/* Contenu du sous-onglet actif */}
             {activeSub === 'gantt' && (
               <div className="space-y-4">
                 <div className="text-xs capitalize" style={{color:'#2D5580'}}>{fmtDate(time)}</div>
-                <GanttEnhanced
-                  flights={flights}
-                  fleet={fleet}
-                  user={user}
-                  onFlightClick={handleFlightClick}
-                  onCreateFlight={handleCreateFlight}
-                />
+                <GanttEnhanced flights={flights} fleet={fleet} user={user} onFlightClick={handleFlightClick} onCreateFlight={handleCreateFlight}/>
               </div>
             )}
             {activeSub === 'flights' && (
-              <FlightsPage
-                flights={flights}
-                fleet={fleet}
-                user={user}
-                onCreateFlight={() => setFlightModal({})}
-              />
+              <FlightsPage flights={flights} fleet={fleet} user={user} onCreateFlight={() => setFlightModal({})}/>
             )}
             {activeSub === 'crew' && (
               <CrewPage flights={flights} user={user}/>
@@ -1038,37 +916,25 @@ export default function Dashboard() {
         )}
 
         {/* ════════════════════════
-            3. FLOTTE — tabs intégrés
+            3. FLOTTE
         ════════════════════════ */}
         {activeSection === 'fleet' && (
           <div>
             <div style={{ marginBottom: 24 }}>
-              <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
-                flexWrap: 'wrap', gap: 12, marginBottom: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
                 <div>
-                  <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.15em',
-                    textTransform: 'uppercase', color: '#2D5580', margin: '0 0 4px' }}>
-                    SBH Commuter
-                  </p>
-                  <h1 style={{ fontSize: 22, fontWeight: 900, color: '#F1F5F9', margin: 0, letterSpacing: '-0.02em' }}>
-                    Flotte
-                  </h1>
+                  <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: '#2D5580', margin: '0 0 4px' }}>SBH Commuter</p>
+                  <h1 style={{ fontSize: 22, fontWeight: 900, color: '#F1F5F9', margin: 0, letterSpacing: '-0.02em' }}>Flotte</h1>
                 </div>
-                <div style={{
-                  display: 'flex', gap: 3, padding: '4px',
-                  backgroundColor: 'rgba(15,39,69,0.8)',
-                  borderRadius: 12, border: '1px solid #1E3A5F',
-                }}>
+                <div style={{ display: 'flex', gap: 3, padding: '4px', backgroundColor: 'rgba(15,39,69,0.8)', borderRadius: 12, border: '1px solid #1E3A5F' }}>
                   {[
-                    { id: 'aircraft',    label: '✈ Appareils'  },
+                    { id: 'aircraft',    label: '✈ Appareils'   },
                     { id: 'maintenance', label: '🔧 Maintenance' },
                   ].map(t => (
                     <button key={t.id} onClick={() => setSubTabFor('fleet', t.id)}
                       style={{
-                        padding: '7px 18px', borderRadius: 9,
-                        fontSize: 12, fontWeight: 700,
-                        border: 'none', cursor: 'pointer',
-                        transition: 'all 0.15s',
+                        padding: '7px 18px', borderRadius: 9, fontSize: 12, fontWeight: 700,
+                        border: 'none', cursor: 'pointer', transition: 'all 0.15s',
                         backgroundColor: activeSub === t.id ? '#F0B429' : 'transparent',
                         color:           activeSub === t.id ? '#0B1F3A' : '#5B8DB8',
                         boxShadow:       activeSub === t.id ? '0 2px 8px rgba(240,180,41,0.3)' : 'none',
@@ -1080,48 +946,31 @@ export default function Dashboard() {
               </div>
               <div style={{ height: 1, backgroundColor: '#1E3A5F', marginTop: 16 }}/>
             </div>
-
-            {activeSub === 'aircraft' && (
-              <FleetPage fleet={fleet} flights={flights} user={user}/>
-            )}
-            {activeSub === 'maintenance' && (
-              <MaintenancePage fleet={fleet} flights={flights} user={user}/>
-            )}
+            {activeSub === 'aircraft'    && <FleetPage       fleet={fleet} flights={flights} user={user}/>}
+            {activeSub === 'maintenance' && <MaintenancePage fleet={fleet} flights={flights} user={user}/>}
           </div>
         )}
 
         {/* ════════════════════════
-            4. OPÉRATIONS — tabs intégrés
+            4. OPÉRATIONS
         ════════════════════════ */}
         {activeSection === 'operations' && (
           <div>
             <div style={{ marginBottom: 24 }}>
-              <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
-                flexWrap: 'wrap', gap: 12, marginBottom: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
                 <div>
-                  <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.15em',
-                    textTransform: 'uppercase', color: '#2D5580', margin: '0 0 4px' }}>
-                    SBH Commuter
-                  </p>
-                  <h1 style={{ fontSize: 22, fontWeight: 900, color: '#F1F5F9', margin: 0, letterSpacing: '-0.02em' }}>
-                    Opérations
-                  </h1>
+                  <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: '#2D5580', margin: '0 0 4px' }}>SBH Commuter</p>
+                  <h1 style={{ fontSize: 22, fontWeight: 900, color: '#F1F5F9', margin: 0, letterSpacing: '-0.02em' }}>Opérations</h1>
                 </div>
-                <div style={{
-                  display: 'flex', gap: 3, padding: '4px',
-                  backgroundColor: 'rgba(15,39,69,0.8)',
-                  borderRadius: 12, border: '1px solid #1E3A5F',
-                }}>
+                <div style={{ display: 'flex', gap: 3, padding: '4px', backgroundColor: 'rgba(15,39,69,0.8)', borderRadius: 12, border: '1px solid #1E3A5F' }}>
                   {[
                     { id: 'livemap', label: '🗺 Live Map' },
                     { id: 'weather', label: '◎ Météo'    },
                   ].map(t => (
                     <button key={t.id} onClick={() => setSubTabFor('operations', t.id)}
                       style={{
-                        padding: '7px 18px', borderRadius: 9,
-                        fontSize: 12, fontWeight: 700,
-                        border: 'none', cursor: 'pointer',
-                        transition: 'all 0.15s',
+                        padding: '7px 18px', borderRadius: 9, fontSize: 12, fontWeight: 700,
+                        border: 'none', cursor: 'pointer', transition: 'all 0.15s',
                         backgroundColor: activeSub === t.id ? '#F0B429' : 'transparent',
                         color:           activeSub === t.id ? '#0B1F3A' : '#5B8DB8',
                         boxShadow:       activeSub === t.id ? '0 2px 8px rgba(240,180,41,0.3)' : 'none',
@@ -1133,15 +982,8 @@ export default function Dashboard() {
               </div>
               <div style={{ height: 1, backgroundColor: '#1E3A5F', marginTop: 16 }}/>
             </div>
-
             {activeSub === 'livemap' && (
-              <LiveMap
-                flights={flights}
-                fleet={fleet}
-                user={user}
-                fullscreen={false}
-                onToggleFullscreen={() => setLiveMapFullscreen(true)}
-              />
+              <LiveMap flights={flights} fleet={fleet} user={user} fullscreen={false} onToggleFullscreen={() => setLiveMapFullscreen(true)}/>
             )}
             {activeSub === 'weather' && (
               <div className="space-y-4">
@@ -1151,9 +993,7 @@ export default function Dashboard() {
                   </div>
                   <div className="flex items-center gap-2">
                     {!AVWX_KEY && (
-                      <span style={{color:'#F0B429',fontSize:9,padding:'3px 8px',border:'1px solid rgba(240,180,41,0.4)',borderRadius:4}}>
-                        DÉMO
-                      </span>
+                      <span style={{color:'#F0B429',fontSize:9,padding:'3px 8px',border:'1px solid rgba(240,180,41,0.4)',borderRadius:4}}>DÉMO</span>
                     )}
                     <button onClick={fetchWeather} disabled={weatherLoading || !AVWX_KEY}
                       className="text-xs px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-30"
@@ -1181,7 +1021,7 @@ export default function Dashboard() {
                   </div>
                 </div>
                 <div style={{height:1, backgroundColor:'#1E3A5F'}}/>
-                <WeatherForecast flights={flights} weather={weather} />
+                <WeatherForecast flights={flights} weather={weather}/>
               </div>
             )}
           </div>
@@ -1192,12 +1032,12 @@ export default function Dashboard() {
         ════════════════════════ */}
         {activeSection === 'alerts' && (
           <div className="rounded-xl border p-5" style={{backgroundColor:'#071729',borderColor:'#1E3A5F',minHeight:400}}>
-            <SmartAlertsPanel userId={user?.uid} />
+            <SmartAlertsPanel userId={user?.uid}/>
           </div>
         )}
 
         {/* ════════════════════════
-            AUDIT (discret)
+            AUDIT
         ════════════════════════ */}
         {activeSection === 'audit' && (
           <AuditPage user={user}/>
@@ -1205,24 +1045,13 @@ export default function Dashboard() {
 
       </main>
 
-      {/* ── PROFIL UTILISATEUR (panel slide-in) ── */}
-      {profileOpen && (
-        <ProfilePage onClose={() => setProfileOpen(false)}/>
-      )}
+      {/* ── PROFIL UTILISATEUR ── */}
+      {profileOpen && <ProfilePage onClose={() => setProfileOpen(false)}/>}
 
       {/* ── LIVE MAP PLEIN ÉCRAN ── */}
       {liveMapFullscreen && (
-        <div style={{
-          position:'fixed', inset:0, zIndex:500,
-          backgroundColor:'#071118', display:'flex', flexDirection:'column',
-        }}>
-          <LiveMap
-            flights={flights}
-            fleet={fleet}
-            user={user}
-            fullscreen={true}
-            onToggleFullscreen={() => setLiveMapFullscreen(false)}
-          />
+        <div style={{ position:'fixed', inset:0, zIndex:500, backgroundColor:'#071118', display:'flex', flexDirection:'column' }}>
+          <LiveMap flights={flights} fleet={fleet} user={user} fullscreen={true} onToggleFullscreen={() => setLiveMapFullscreen(false)}/>
         </div>
       )}
 
