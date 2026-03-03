@@ -1,338 +1,344 @@
 /**
- * @fileoverview Moteur de détection de conflits Gantt — SKYBH
- * Entièrement pur (pas d'imports Firebase), testable isolément.
+ * @fileoverview Analyse des conflits planning SKYBH
+ * Détecte : chevauchements, rotations courtes, limites FTL, maintenance
+ * Génère des suggestions de résolution actionnables
  */
 
-/** @typedef {'overlap'|'turnaround'|'unavailable'|'ftl'|'overload'} ConflictType */
+const MIN_TURNAROUND = 20 // minutes minimum entre 2 vols sur le même avion
 
-/**
- * @typedef {Object} Conflict
- * @property {string}       flightId
- * @property {ConflictType} type
- * @property {'warning'|'critical'} severity
- * @property {string}       message
- * @property {string[]}     relatedFlightIds
- * @property {Suggestion[]} suggestions
- */
+// ── Helpers temps ─────────────────────────────────────────────────────────────
 
-/**
- * @typedef {Object} Suggestion
- * @property {'swap_aircraft'|'delay_flight'|'cancel_flight'} action
- * @property {string} label
- * @property {Object} payload
- */
-
-/**
- * @typedef {Object} PlanningRules
- * @property {number} min_turnaround_minutes
- * @property {number} buffer_minutes
- * @property {number} max_daily_cycles
- * @property {number} max_crew_duty_minutes
- */
-
-/** Règles par défaut */
-export const DEFAULT_RULES = {
-  min_turnaround_minutes: 20,
-  buffer_minutes: 5,
-  max_daily_cycles: 8,
-  max_crew_duty_minutes: 900,
+const toDate = ts => {
+  if (!ts) return new Date(0)
+  if (ts?.toDate) return ts.toDate()
+  if (ts?.seconds) return new Date(ts.seconds * 1000)
+  return new Date(ts)
 }
 
-const toMs  = ts => ts?.toDate ? ts.toDate().getTime() : new Date(ts).getTime()
-const toMin = ms => Math.round(ms / 60000)
+const diffMinutes = (a, b) => Math.round((b - a) / 60000)
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/**
- * Retourne tous les vols d'un avion, triés par heure de départ
- */
-const flightsByAircraft = (flights, registration) =>
-  flights
-    .filter(f => f.aircraft === registration && f.status !== 'cancelled')
-    .sort((a, b) => toMs(a.departure_time) - toMs(b.departure_time))
-
-/**
- * Retourne tous les vols d'un pilote, triés par heure de départ
- */
-const flightsByPilot = (flights, pilot) =>
-  flights
-    .filter(f => f.pilot === pilot && f.status !== 'cancelled')
-    .sort((a, b) => toMs(a.departure_time) - toMs(b.departure_time))
-
-/**
- * Trouver des avions disponibles pour un créneau donné
- */
-const findAvailableAircraft = (flights, fleet, depMs, arrMs, excludeReg) => {
-  const minTurnaround = DEFAULT_RULES.min_turnaround_minutes * 60000
-  return fleet.filter(ac => {
-    if (ac.registration === excludeReg) return false
-    if (ac.status === 'maintenance') return false
-    const acFlights = flightsByAircraft(flights, ac.registration)
-    return acFlights.every(f => {
-      const fDep = toMs(f.departure_time)
-      const fArr = toMs(f.arrival_time)
-      // Pas de chevauchement ni turnaround insuffisant
-      return arrMs + minTurnaround <= fDep || fArr + minTurnaround <= depMs
-    })
-  })
+const fmtTime = d => {
+  try {
+    return d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+  } catch { return '--:--' }
 }
 
-// ── Détecteurs de conflits ────────────────────────────────────────────────────
+const addMinutes = (date, mins) => {
+  const d = new Date(date)
+  d.setMinutes(d.getMinutes() + mins)
+  return d
+}
+
+// ── Analyse principale ────────────────────────────────────────────────────────
 
 /**
- * Détecte les chevauchements (un avion sur 2 vols en même temps)
+ * Analyse tous les conflits d'une liste de vols
+ * @param {Array} flights - vols à analyser
+ * @param {Array} fleet   - flotte disponible
+ * @param {Object} rules  - règles de planification
+ * @returns {Array} liste de conflits avec suggestions
  */
-export const detectOverlaps = (flights) => {
-  const conflicts = []
-  const byAc = {}
-  flights.filter(f => f.status !== 'cancelled').forEach(f => {
-    if (!byAc[f.aircraft]) byAc[f.aircraft] = []
-    byAc[f.aircraft].push(f)
-  })
+export function analyzeAllConflicts(flights = [], fleet = [], rules = {}) {
+  if (!flights.length) return []
 
-  for (const [reg, acFlights] of Object.entries(byAc)) {
-    const sorted = acFlights.sort((a, b) => toMs(a.departure_time) - toMs(b.departure_time))
+  // Utiliser les règles dynamiques si dispo, sinon valeurs par défaut
+  const minTurnaround = rules?.min_turnaround_minutes ?? MIN_TURNAROUND
+  const bufferMins    = rules?.buffer_minutes ?? 0
+
+  const allConflicts = []
+
+  // Regrouper les vols par avion
+  const byAircraft = {}
+  for (const f of flights) {
+    const reg = f.aircraft || f.registration
+    if (!reg) continue
+    if (!byAircraft[reg]) byAircraft[reg] = []
+    byAircraft[reg].push(f)
+  }
+
+  // ── 1. Chevauchements et rotations courtes ────────────────────────────────
+  for (const [reg, aircraftFlights] of Object.entries(byAircraft)) {
+    // Trier par heure de départ
+    const sorted = [...aircraftFlights].sort((a, b) =>
+      toDate(a.departure_time) - toDate(b.departure_time)
+    )
+
     for (let i = 0; i < sorted.length - 1; i++) {
       const curr = sorted[i]
       const next = sorted[i + 1]
-      const currArr = toMs(curr.arrival_time)
-      const nextDep = toMs(next.departure_time)
-      if (nextDep < currArr) {
-        conflicts.push({
-          flightId: next.id,
+
+      if (curr.status === 'cancelled' || next.status === 'cancelled') continue
+
+      const currDep = toDate(curr.departure_time)
+      const currArr = toDate(curr.arrival_time)
+      const nextDep = toDate(next.departure_time)
+      const nextArr = toDate(next.arrival_time)
+
+      const gapMinutes = diffMinutes(currArr, nextDep)
+
+      // ── Chevauchement réel (vol suivant démarre avant que le précédent atterrisse)
+      if (gapMinutes < 0) {
+        const overlapMins = Math.abs(gapMinutes)
+        const suggestions = []
+
+        // Suggestion 1 : décaler le vol suivant après l'atterrissage + marge (toujours présente)
+        const requiredDelay = overlapMins + minTurnaround + bufferMins
+        suggestions.push({
+          label: `Décaler ${next.flight_number || 'vol'} +${requiredDelay}min`,
+          action: 'delay_flight',
+          payload: {
+            flightId: next.id,
+            delayMinutes: requiredDelay,
+          },
+        })
+
+        // Suggestion 2 : chercher un avion disponible pour le vol suivant
+        const availableAircraft = findAvailableAircraft(next, flights, fleet, reg, minTurnaround)
+        if (availableAircraft) {
+          suggestions.push({
+            label: `Basculer sur ${availableAircraft}`,
+            action: 'swap_aircraft',
+            payload: {
+              flightId: next.id,
+              newAircraftRegistration: availableAircraft,
+            },
+          })
+        }
+
+        // Suggestion 3 : décaler le vol courant en avance si possible
+        if (i > 0) {
+          const prevFlight = sorted[i - 1]
+          const prevArr = toDate(prevFlight.arrival_time)
+          const advancePossible = diffMinutes(prevArr, currDep) > minTurnaround + overlapMins
+          if (advancePossible) {
+            suggestions.push({
+              label: `Avancer ${curr.flight_number || 'vol'} de ${overlapMins}min`,
+              action: 'delay_flight',
+              payload: {
+                flightId: curr.id,
+                delayMinutes: -overlapMins,
+              },
+            })
+          }
+        }
+
+        allConflicts.push({
+          id: `overlap-${curr.id}-${next.id}`,
           type: 'overlap',
           severity: 'critical',
-          message: `${next.flight_number} chevauche ${curr.flight_number} sur ${reg}`,
-          relatedFlightIds: [curr.id],
+          flightId: next.id,
+          relatedFlightId: curr.id,
+          aircraft: reg,
+          message: `${next.flight_number || next.id} chevauche ${curr.flight_number || curr.id} sur ${reg} (${overlapMins}min de chevauchement)`,
+          details: {
+            overlapMinutes: overlapMins,
+            currentArrival: fmtTime(currArr),
+            nextDeparture: fmtTime(nextDep),
+          },
+          suggestions,
+        })
+      }
+      // ── Rotation trop courte (gap > 0 mais < minimum)
+      else if (gapMinutes < minTurnaround && gapMinutes >= 0) {
+        const missingMins = minTurnaround - gapMinutes
+        const suggestions = []
+
+        suggestions.push({
+          label: `Décaler ${next.flight_number || 'vol'} de +${missingMins}min`,
+          action: 'delay_flight',
+          payload: {
+            flightId: next.id,
+            delayMinutes: missingMins,
+          },
+        })
+
+        const availableAircraft = findAvailableAircraft(next, flights, fleet, reg, minTurnaround)
+        if (availableAircraft) {
+          suggestions.push({
+            label: `Basculer sur ${availableAircraft}`,
+            action: 'swap_aircraft',
+            payload: {
+              flightId: next.id,
+              newAircraftRegistration: availableAircraft,
+            },
+          })
+        }
+
+        allConflicts.push({
+          id: `turnaround-${curr.id}-${next.id}`,
+          type: 'turnaround',
+          severity: 'warning',
+          flightId: next.id,
+          relatedFlightId: curr.id,
+          aircraft: reg,
+          message: `Rotation courte sur ${reg} — seulement ${gapMinutes}min entre ${curr.flight_number || curr.id} et ${next.flight_number || next.id} (min. ${minTurnaround}min)`,
+          details: {
+            gapMinutes,
+            minRequired: MIN_TURNAROUND,
+          },
+          suggestions,
+        })
+      }
+    }
+  }
+
+  // ── 2. Pilote sur deux vols simultanés ────────────────────────────────────
+  const byPilot = {}
+  for (const f of flights) {
+    const pilot = f.pilot
+    if (!pilot || f.status === 'cancelled') continue
+    if (!byPilot[pilot]) byPilot[pilot] = []
+    byPilot[pilot].push(f)
+  }
+
+  for (const [pilot, pilotFlights] of Object.entries(byPilot)) {
+    const sorted = [...pilotFlights].sort((a, b) =>
+      toDate(a.departure_time) - toDate(b.departure_time)
+    )
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const curr = sorted[i]
+      const next = sorted[i + 1]
+      const currArr = toDate(curr.arrival_time)
+      const nextDep = toDate(next.departure_time)
+      if (nextDep < currArr) {
+        allConflicts.push({
+          id: `pilot-overlap-${curr.id}-${next.id}`,
+          type: 'pilot_overlap',
+          severity: 'critical',
+          flightId: next.id,
+          relatedFlightId: curr.id,
+          pilot,
+          message: `Pilote ${pilot} affecté à deux vols simultanés : ${curr.flight_number || curr.id} et ${next.flight_number || next.id}`,
           suggestions: [],
         })
       }
     }
   }
-  return conflicts
-}
 
-/**
- * Détecte les rotations insuffisantes (turnaround < min_turnaround)
- */
-export const detectTurnaroundViolations = (flights, rules = DEFAULT_RULES) => {
-  const conflicts = []
-  const minMs = (rules.min_turnaround_minutes + rules.buffer_minutes) * 60000
-  const warnMs = rules.min_turnaround_minutes * 60000
+  // ── 3. Avion en maintenance planifié sur un vol ───────────────────────────
+  for (const f of flights) {
+    if (f.status === 'cancelled') continue
+    const aircraft = fleet.find(a => a.registration === (f.aircraft || f.registration))
+    if (aircraft?.status === 'maintenance') {
+      const available = findAvailableAircraft(f, flights, fleet, f.aircraft || f.registration, minTurnaround)
+      const suggestions = available ? [{
+        label: `Remplacer par ${available}`,
+        action: 'swap_aircraft',
+        payload: { flightId: f.id, newAircraftRegistration: available },
+      }] : []
 
-  const byAc = {}
-  flights.filter(f => f.status !== 'cancelled').forEach(f => {
-    if (!byAc[f.aircraft]) byAc[f.aircraft] = []
-    byAc[f.aircraft].push(f)
-  })
-
-  for (const [reg, acFlights] of Object.entries(byAc)) {
-    const sorted = acFlights.sort((a, b) => toMs(a.departure_time) - toMs(b.departure_time))
-    for (let i = 0; i < sorted.length - 1; i++) {
-      const curr = sorted[i]
-      const next = sorted[i + 1]
-      const gap = toMs(next.departure_time) - toMs(curr.arrival_time)
-      if (gap < 0) continue // déjà détecté comme overlap
-
-      if (gap < minMs) {
-        const gapMin = toMin(gap)
-        const isCritical = gap < warnMs
-        conflicts.push({
-          flightId: next.id,
-          type: 'turnaround',
-          severity: isCritical ? 'critical' : 'warning',
-          message: `Rotation ${reg} trop courte : ${gapMin} min (min. ${rules.min_turnaround_minutes} min)`,
-          relatedFlightIds: [curr.id],
-          suggestions: [
-            {
-              action: 'delay_flight',
-              label: `Décaler ${next.flight_number} de ${rules.min_turnaround_minutes + rules.buffer_minutes - gapMin} min`,
-              payload: {
-                flightId: next.id,
-                delayMinutes: rules.min_turnaround_minutes + rules.buffer_minutes - gapMin,
-              },
-            },
-          ],
-        })
-      }
+      allConflicts.push({
+        id: `maintenance-${f.id}`,
+        type: 'maintenance',
+        severity: 'critical',
+        flightId: f.id,
+        aircraft: f.aircraft || f.registration,
+        message: `${f.flight_number || f.id} — avion ${f.aircraft || f.registration} est en maintenance`,
+        suggestions,
+      })
     }
   }
-  return conflicts
+
+  // Dédoublonnage par id
+  const seen = new Set()
+  return allConflicts.filter(c => {
+    if (seen.has(c.id)) return false
+    seen.add(c.id)
+    return true
+  })
 }
 
+// ── Trouver un avion disponible ───────────────────────────────────────────────
+
 /**
- * Détecte les vols assignés à un avion en maintenance
+ * Cherche un avion disponible pour un vol donné (pas de conflit horaire)
+ * @param {Object} targetFlight - vol à réassigner
+ * @param {Array}  allFlights   - tous les vols
+ * @param {Array}  fleet        - flotte
+ * @param {string} excludeReg   - immatriculation à exclure
+ * @returns {string|null} immatriculation disponible ou null
  */
-export const detectUnavailableAircraft = (flights, fleet) => {
-  const conflicts = []
-  const maintenanceAc = new Set(
-    fleet.filter(ac => ac.status === 'maintenance').map(ac => ac.registration)
+function findAvailableAircraft(targetFlight, allFlights, fleet, excludeReg, minTurnaround = MIN_TURNAROUND) {
+  const dep = toDate(targetFlight.departure_time)
+  const arr = toDate(targetFlight.arrival_time)
+
+  const candidates = fleet.filter(a =>
+    a.registration !== excludeReg &&
+    a.status !== 'maintenance' // tout avion non en maintenance est candidat
   )
 
-  flights
-    .filter(f => f.status !== 'cancelled' && maintenanceAc.has(f.aircraft))
-    .forEach(f => {
-      conflicts.push({
-        flightId: f.id,
-        type: 'unavailable',
-        severity: 'critical',
-        message: `${f.aircraft} est en maintenance — vol ${f.flight_number} impossible`,
-        relatedFlightIds: [],
-        suggestions: [],
-      })
+  for (const candidate of candidates) {
+    const reg = candidate.registration
+    const conflicting = allFlights.some(f => {
+      if (f.id === targetFlight.id) return false
+      if (f.status === 'cancelled') return false
+      if ((f.aircraft || f.registration) !== reg) return false
+      const fDep = toDate(f.departure_time)
+      const fArr = toDate(f.arrival_time)
+      // Chevauchement avec marge de rotation
+      const fDepWithMargin = addMinutes(fDep, -minTurnaround)
+      const fArrWithMargin = addMinutes(fArr, minTurnaround)
+      return dep < fArrWithMargin && arr > fDepWithMargin
     })
-
-  return conflicts
-}
-
-/**
- * Détecte les dépassements FTL (temps de service équipage)
- */
-export const detectFTLViolations = (flights, rules = DEFAULT_RULES) => {
-  const conflicts = []
-  const byPilot = {}
-  flights.filter(f => f.status !== 'cancelled' && f.pilot).forEach(f => {
-    if (!byPilot[f.pilot]) byPilot[f.pilot] = []
-    byPilot[f.pilot].push(f)
-  })
-
-  for (const [pilot, pilotFlights] of Object.entries(byPilot)) {
-    const sorted = pilotFlights.sort((a, b) => toMs(a.departure_time) - toMs(b.departure_time))
-    if (sorted.length < 2) continue
-    const firstDep = toMs(sorted[0].departure_time)
-    const lastArr  = toMs(sorted[sorted.length - 1].arrival_time)
-    const dutyMin  = toMin(lastArr - firstDep)
-
-    if (dutyMin > rules.max_crew_duty_minutes) {
-      conflicts.push({
-        flightId: sorted[sorted.length - 1].id,
-        type: 'ftl',
-        severity: 'critical',
-        message: `FTL dépassé pour ${pilot} : ${dutyMin} min (max ${rules.max_crew_duty_minutes} min)`,
-        relatedFlightIds: sorted.slice(0, -1).map(f => f.id),
-        suggestions: [],
-      })
-    } else if (dutyMin > rules.max_crew_duty_minutes * 0.9) {
-      conflicts.push({
-        flightId: sorted[sorted.length - 1].id,
-        type: 'ftl',
-        severity: 'warning',
-        message: `FTL à ${Math.round((dutyMin / rules.max_crew_duty_minutes) * 100)}% pour ${pilot} (${dutyMin} min)`,
-        relatedFlightIds: sorted.slice(0, -1).map(f => f.id),
-        suggestions: [],
-      })
-    }
+    if (!conflicting) return reg
   }
-  return conflicts
+  return null
 }
 
-/**
- * Détecte les avions surcharges (> max_daily_cycles)
- */
-export const detectOverload = (flights, rules = DEFAULT_RULES) => {
-  const conflicts = []
-  const byAc = {}
-  flights.filter(f => f.status !== 'cancelled').forEach(f => {
-    if (!byAc[f.aircraft]) byAc[f.aircraft] = []
-    byAc[f.aircraft].push(f)
-  })
-
-  for (const [reg, acFlights] of Object.entries(byAc)) {
-    if (acFlights.length > rules.max_daily_cycles) {
-      conflicts.push({
-        flightId: acFlights[acFlights.length - 1].id,
-        type: 'overload',
-        severity: 'warning',
-        message: `${reg} : ${acFlights.length} cycles aujourd'hui (max ${rules.max_daily_cycles})`,
-        relatedFlightIds: acFlights.slice(0, -1).map(f => f.id),
-        suggestions: [],
-      })
-    }
-  }
-  return conflicts
-}
+// ── Index des conflits par vol ────────────────────────────────────────────────
 
 /**
- * Enrichit les suggestions avec les avions disponibles
+ * Construit un index {flightId: [conflicts]} pour un accès O(1)
+ * @param {Array} conflicts
+ * @returns {Object}
  */
-export const enrichSuggestionsWithFleet = (conflicts, flights, fleet) => {
-  return conflicts.map(conflict => {
-    if (conflict.type !== 'unavailable' && conflict.type !== 'turnaround') return conflict
-
-    const flight = flights.find(f => f.id === conflict.flightId)
-    if (!flight) return conflict
-
-    const depMs = toMs(flight.departure_time)
-    const arrMs = toMs(flight.arrival_time)
-    const available = findAvailableAircraft(flights, fleet, depMs, arrMs, flight.aircraft)
-
-    const swapSuggestions = available.slice(0, 2).map(ac => ({
-      action: 'swap_aircraft',
-      label: `Réassigner à ${ac.registration}`,
-      payload: { flightId: flight.id, newAircraftRegistration: ac.registration },
-    }))
-
-    return {
-      ...conflict,
-      suggestions: [...swapSuggestions, ...conflict.suggestions],
-    }
-  })
-}
-
-/**
- * Lance l'analyse complète et retourne tous les conflits
- * @param {Object[]} flights
- * @param {Object[]} fleet
- * @param {PlanningRules} rules
- * @returns {Conflict[]}
- */
-export const analyzeAllConflicts = (flights, fleet, rules = DEFAULT_RULES) => {
-  const raw = [
-    ...detectOverlaps(flights),
-    ...detectTurnaroundViolations(flights, rules),
-    ...detectUnavailableAircraft(flights, fleet),
-    ...detectFTLViolations(flights, rules),
-    ...detectOverload(flights, rules),
-  ]
-  return enrichSuggestionsWithFleet(raw, flights, fleet)
-}
-
-/**
- * Construit un index flightId → Conflict[] pour accès O(1) dans le Gantt
- * @param {Conflict[]} conflicts
- * @returns {Record<string, Conflict[]>}
- */
-export const buildConflictIndex = (conflicts) => {
+export function buildConflictIndex(conflicts = []) {
   const index = {}
   for (const c of conflicts) {
     if (!index[c.flightId]) index[c.flightId] = []
     index[c.flightId].push(c)
+    // Indexer aussi le vol relié pour affichage visuel
+    if (c.relatedFlightId) {
+      if (!index[c.relatedFlightId]) index[c.relatedFlightId] = []
+      // Ne pas dupliquer le même conflit
+      if (!index[c.relatedFlightId].find(x => x.id === c.id)) {
+        index[c.relatedFlightId].push(c)
+      }
+    }
   }
   return index
 }
 
+// ── Heatmap de charge ─────────────────────────────────────────────────────────
+
 /**
- * Calcule la heatmap de charge par heure et par avion
- * Retourne un tableau { hour, aircraft, load } normalisé 0–1
+ * Calcule la charge par heure pour la heatmap
+ * @param {Array}  flights
+ * @param {Array}  fleet
+ * @param {number} startHour
+ * @param {number} endHour
+ * @returns {Array} tableau {hour, count, pct}
  */
-export const computeHeatmap = (flights, fleet, ganttStart = 6, ganttEnd = 19) => {
-  const cells = []
-  for (const ac of fleet) {
-    for (let h = ganttStart; h < ganttEnd; h++) {
-      const slotStart = h * 60
-      const slotEnd   = (h + 1) * 60
-      const occupied  = flights
-        .filter(f => f.aircraft === ac.registration && f.status !== 'cancelled')
-        .reduce((sum, f) => {
-          const dep = f.departure_time?.toDate ? f.departure_time.toDate() : new Date(f.departure_time)
-          const arr = f.arrival_time?.toDate   ? f.arrival_time.toDate()   : new Date(f.arrival_time)
-          const depMin = dep.getHours() * 60 + dep.getMinutes()
-          const arrMin = arr.getHours() * 60 + arr.getMinutes()
-          const overlap = Math.max(0, Math.min(arrMin, slotEnd) - Math.max(depMin, slotStart))
-          return sum + overlap
-        }, 0)
-      cells.push({ hour: h, aircraft: ac.registration, load: Math.min(1, occupied / 60) })
+export function computeHeatmap(flights = [], fleet = [], startHour = 6, endHour = 19) {
+  const hours = Array.from({ length: endHour - startHour }, (_, i) => startHour + i)
+  const maxAircraft = fleet.length || 1
+
+  return hours.map(h => {
+    const count = flights.filter(f => {
+      if (f.status === 'cancelled') return false
+      try {
+        const dep = toDate(f.departure_time)
+        const arr = toDate(f.arrival_time)
+        const slotStart = new Date(dep); slotStart.setHours(h, 0, 0, 0)
+        const slotEnd   = new Date(dep); slotEnd.setHours(h + 1, 0, 0, 0)
+        return dep < slotEnd && arr > slotStart
+      } catch { return false }
+    }).length
+
+    return {
+      hour: h,
+      count,
+      pct: Math.min(100, Math.round((count / maxAircraft) * 100)),
     }
-  }
-  return cells
+  })
 }

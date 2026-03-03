@@ -1,12 +1,10 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { Timestamp } from 'firebase/firestore'
-import { collection, query, where, orderBy, onSnapshot } from 'firebase/firestore'
-import { db } from '../services/firebase'
 import { useAuth } from '../context/AuthContext'
 import { useAircraft } from '../hooks/useAircraft'
 import { useFlights } from '../hooks/useFlights'
 import { getPotentialPercent, getAlertLevel } from '../services/aircraft'
-import { updateFlight, AIRPORTS_FULL } from '../services/flights'
+import { updateFlight, addFlight, AIRPORTS_FULL } from '../services/flights'
 import FlightModal from '../components/FlightModal'
 import AircraftModal from '../components/AircraftModal'
 import WeatherCard from '../components/WeatherCard'
@@ -22,19 +20,14 @@ import CrewPage from './crew'
 import ProfilePage from './profile'
 import PassengerCheckin from '../components/dcs/PassengerCheckin'
 import WBCalculator from '../components/dcs/WBCalculator'
+import FlightCreationModal from '../components/gantt/flight-creation-modal'
 
-// ── Config ────────────────────────────────────────────────────
-const AVWX_KEY    = import.meta.env.VITE_AVWX_API_KEY || ''
-const GANTT_START = 6
-const GANTT_END   = 19
-const SBH_TZ      = 'America/St_Barthelemy'
+// ── Config ─────────────────────────────────────────────────────────────────
+const AVWX_KEY = import.meta.env.VITE_AVWX_API_KEY || ''
+const SBH_TZ   = 'America/St_Barthelemy'
 
-// ── Mock fallback ─────────────────────────────────────────────
-const mkDate = (h, m) => {
-  const d = new Date()
-  d.setHours(h, m, 0, 0)
-  return { toDate: () => d }
-}
+// ── Mock data ───────────────────────────────────────────────────────────────
+const mkDate = (h, m) => { const d = new Date(); d.setHours(h, m, 0, 0); return { toDate: () => d } }
 
 const MOCK_FLEET = [
   { id:'F-OSBC', registration:'F-OSBC', type:'Cessna 208B Grand Caravan',    msn:'208B2188', year:2010, seats:9, status:'available',   airframe_hours:7821, engine_hours:1680, airframe_limit:20000, engine_limit:3600 },
@@ -54,377 +47,635 @@ const MOCK_FLIGHTS = [
   { id:'6',  flight_number:'PV806', origin:'TNCM', destination:'TFFJ', departure_time:mkDate(10,45), arrival_time:mkDate(11,10), status:'scheduled', pax_count:8, max_pax:9, aircraft:'F-OSBS', pilot:'C. Leroy'  },
   { id:'7',  flight_number:'PV807', origin:'TFFJ', destination:'TFFG', departure_time:mkDate(11,0),  arrival_time:mkDate(11,20), status:'scheduled', pax_count:9, max_pax:9, aircraft:'F-OSJR', pilot:'A. Blanc'  },
   { id:'8',  flight_number:'PV808', origin:'TFFG', destination:'TFFJ', departure_time:mkDate(12,0),  arrival_time:mkDate(12,20), status:'scheduled', pax_count:4, max_pax:9, aircraft:'F-OSJR', pilot:'A. Blanc'  },
-  { id:'9',  flight_number:'PV809', origin:'TFFJ', destination:'TNCM', departure_time:mkDate(13,30), arrival_time:mkDate(13,55), status:'scheduled', pax_count:7, max_pax:9, aircraft:'F-OSBC', pilot:'J. Dupont' },
-  { id:'10', flight_number:'PV810', origin:'TNCM', destination:'TFFJ', departure_time:mkDate(14,30), arrival_time:mkDate(14,55), status:'scheduled', pax_count:6, max_pax:9, aircraft:'F-OSBM', pilot:'S. Martin' },
-  { id:'11', flight_number:'PV811', origin:'TFFJ', destination:'TFFG', departure_time:mkDate(15,30), arrival_time:mkDate(15,50), status:'scheduled', pax_count:5, max_pax:9, aircraft:'F-OSBS', pilot:'C. Leroy'  },
-  { id:'12', flight_number:'PV812', origin:'TFFG', destination:'TFFJ', departure_time:mkDate(16,30), arrival_time:mkDate(16,50), status:'scheduled', pax_count:8, max_pax:9, aircraft:'F-OSJR', pilot:'A. Blanc'  },
 ]
 
 const WEATHER_MOCK = {
-  TFFJ: { icao:'TFFJ', name:'Saint-Barthelemy',     temp:28, wind_speed:12, wind_dir:'ENE', wind_deg:70, vis:10, ceiling:null, dewpoint:22, wind_gust:null, status:'VFR',  raw:'TFFJ 271200Z 07012KT 9999 FEW022 28/22 Q1015', updated:new Date() },
-  TFFG: { icao:'TFFG', name:'St-Martin Grand Case', temp:29, wind_speed:18, wind_dir:'E',   wind_deg:90, vis:8,  ceiling:null, dewpoint:23, wind_gust:25,   status:'VFR',  raw:'TFFG 271200Z 09018KT 8000 SCT018 29/23 Q1014', updated:new Date() },
-  TNCM: { icao:'TNCM', name:'Sint-Maarten Juliana', temp:27, wind_speed:22, wind_dir:'NE',  wind_deg:50, vis:6,  ceiling:1200, dewpoint:24, wind_gust:30,   status:'MVFR', raw:'TNCM 271200Z 05022KT 6000 BKN012 27/24 Q1013', updated:new Date() },
+  TFFJ: { icao:'TFFJ', name:'Saint-Barth',   temp:28, wind_speed:12, wind_dir:'ENE', wind_deg:70,  vis:10, ceiling:null, dewpoint:22, wind_gust:null, status:'VFR',  raw:'TFFJ 271200Z 07012KT 9999 FEW022 28/22 Q1015', updated:new Date() },
+  TFFG: { icao:'TFFG', name:'Grand Case',    temp:29, wind_speed:18, wind_dir:'E',   wind_deg:90,  vis:8,  ceiling:null, dewpoint:23, wind_gust:25,   status:'VFR',  raw:'TFFG 271200Z 09018KT 8000 SCT018 29/23 Q1014', updated:new Date() },
+  TNCM: { icao:'TNCM', name:'Sint-Maarten',  temp:27, wind_speed:22, wind_dir:'NE',  wind_deg:50,  vis:6,  ceiling:1200, dewpoint:24, wind_gust:30,   status:'MVFR', raw:'TNCM 271200Z 05022KT 6000 BKN012 27/24 Q1013', updated:new Date() },
 }
 
-// ── Helpers ───────────────────────────────────────────────────
-const toDate   = ts => ts?.toDate ? ts.toDate() : new Date(ts)
-const fmtTime  = d  => d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' })
-const fmtClock = d  => d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit', second:'2-digit', timeZone: SBH_TZ })
-const fmtDate  = d  => d.toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long', timeZone: SBH_TZ })
+// ── Helpers ─────────────────────────────────────────────────────────────────
+const toDate   = ts  => ts?.toDate ? ts.toDate() : new Date(ts)
+const fmtTime  = d   => d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' })
+const fmtClock = d   => d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit', second:'2-digit', timeZone:SBH_TZ })
+const fmtDate  = d   => d.toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long', timeZone:SBH_TZ })
+const fmtDateShort = d => d.toLocaleDateString('fr-FR', { day:'numeric', month:'short', timeZone:SBH_TZ })
 
-const pctToTime = pct => {
-  const totalMins = (GANTT_END - GANTT_START) * 60
-  const mins = Math.round(pct * totalMins)
-  return { h: GANTT_START + Math.floor(mins / 60), m: mins % 60 }
+function computeRealtimeStatus(flight) {
+  const now = new Date()
+  const dep = flight.departure_time?.toDate?.() || (flight.departure_time instanceof Date ? flight.departure_time : null)
+  const arr = flight.arrival_time?.toDate?.()   || (flight.arrival_time  instanceof Date ? flight.arrival_time  : null)
+  if (!dep) return flight.status || 'scheduled'
+  if (flight.status === 'cancelled') return 'cancelled'
+  if (flight.status === 'landed')    return 'landed'
+  const diffDepMin = (dep - now) / 60000
+  const diffArrMin = arr ? (arr - now) / 60000 : null
+  if (diffArrMin !== null && diffArrMin < 0 && diffDepMin < 0) return 'landed'
+  if (diffDepMin < 0 && (diffArrMin === null || diffArrMin > 0)) return 'in_flight'
+  if (diffDepMin >= 0 && diffDepMin <= 20) return 'boarding'
+  return 'scheduled'
 }
 
-const STATUS_LABEL = { available:'Disponible', in_flight:'En vol', maintenance:'Maintenance' }
+function normalizeFlight(flight) {
+  return {
+    ...flight,
+    flightNumber:       flight.flight_number  || flight.flightNumber  || '',
+    registration:       flight.aircraft       || flight.registration  || '',
+    origin:             flight.origin         || '',
+    destination:        flight.destination    || '',
+    scheduledDeparture: flight.departure_time || flight.scheduledDeparture || null,
+    scheduledArrival:   flight.arrival_time   || flight.scheduledArrival   || null,
+    status: computeRealtimeStatus(flight),
+  }
+}
 
-// ── Composants atomiques ──────────────────────────────────────
+// ── Design tokens ────────────────────────────────────────────────────────────
+const C = {
+  bg:         '#060D1A',
+  bgPanel:    '#0A1525',
+  bgCard:     '#0D1C30',
+  border:     '#112038',
+  borderHi:   '#1A3356',
+  gold:       '#D4A843',
+  goldDim:    '#7A5E20',
+  blue:       '#2A6ADB',
+  blueLight:  '#5B9EFF',
+  text:       '#C8D8EE',
+  textDim:    '#4A6480',
+  textFaint:  '#1E3050',
+  green:      '#2ECC8A',
+  red:        '#E05050',
+  amber:      '#E8963C',
+}
 
-function StatusDot({ status }) {
-  const c = { available:'#4ADE80', in_flight:'#F0B429', maintenance:'#F87171' }[status] || '#9CA3AF'
+const STATUS_STYLE = {
+  landed:    { dot:'#2ECC8A', label:'Atterri',      bg:'rgba(46,204,138,0.08)',  border:'rgba(46,204,138,0.2)'  },
+  in_flight: { dot:'#D4A843', label:'En vol',        bg:'rgba(212,168,67,0.1)',   border:'rgba(212,168,67,0.25)' },
+  boarding:  { dot:'#E8963C', label:'Embarquement',  bg:'rgba(232,150,60,0.1)',   border:'rgba(232,150,60,0.3)'  },
+  scheduled: { dot:'#2A6ADB', label:'Programmé',     bg:'rgba(42,106,219,0.08)',  border:'rgba(42,106,219,0.2)'  },
+  cancelled: { dot:'#E05050', label:'Annulé',        bg:'rgba(224,80,80,0.06)',   border:'rgba(224,80,80,0.15)'  },
+}
+
+// ── Micro-composants ─────────────────────────────────────────────────────────
+
+function Dot({ color, pulse }) {
   return (
-    <span style={{
-      display:'inline-block', width:9, height:9, borderRadius:'50%',
-      backgroundColor:c, boxShadow:`0 0 7px ${c}`, flexShrink:0,
-    }}/>
+    <span style={{ position:'relative', display:'inline-flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+      <span style={{ width:7, height:7, borderRadius:'50%', backgroundColor:color, boxShadow:`0 0 6px ${color}`, display:'block' }}/>
+      {pulse && <span style={{
+        position:'absolute', width:13, height:13, borderRadius:'50%',
+        border:`1px solid ${color}`, opacity:0.4,
+        animation:'ripple 2s ease-out infinite',
+      }}/>}
+    </span>
   )
 }
 
-function KPICard({ label, value, sub, color, icon }) {
+function Tag({ children, color = C.textDim, bg = 'transparent', border }) {
   return (
-    <div className="rounded-xl border p-4" style={{ backgroundColor:'#112D52', borderColor:'#1E3A5F' }}>
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="text-2xl font-black" style={{ color }}>{value}</div>
-          <div style={{ color:'#5B8DB8', fontSize:12, marginTop:3 }}>{label}</div>
-          {sub && <div style={{ color:'#2D5580', fontSize:10, marginTop:2 }}>{sub}</div>}
+    <span style={{
+      fontSize:9, fontWeight:700, letterSpacing:'0.1em', textTransform:'uppercase',
+      padding:'2px 7px', borderRadius:3,
+      color, backgroundColor:bg, border:`1px solid ${border || color}`,
+    }}>{children}</span>
+  )
+}
+
+function Divider() {
+  return <div style={{ height:1, backgroundColor:C.border, margin:'0' }}/>
+}
+
+// ── KPI Strip ───────────────────────────────────────────────────────────────
+function KPIStrip({ kpis, flights }) {
+  const inFlightFlights = flights.filter(f => computeRealtimeStatus(f) === 'in_flight')
+  const boardingFlights = flights.filter(f => computeRealtimeStatus(f) === 'boarding')
+  const stats = [
+    {
+      label: 'VOLS AUJOURD\'HUI',
+      value: kpis.total,
+      color: C.text,
+      sub: `${kpis.completed || 0} atterris · ${kpis.cancelled || 0} annulés`,
+      accent: C.borderHi,
+    },
+    {
+      label: 'EN VOL',
+      value: kpis.inFlight || 0,
+      color: kpis.inFlight > 0 ? C.gold : C.textDim,
+      sub: boardingFlights.length > 0 ? `${boardingFlights.length} en embarquement` : 'aucun en cours',
+      pulse: kpis.inFlight > 0,
+      accent: kpis.inFlight > 0 ? C.gold : C.borderHi,
+      detail: inFlightFlights.map(f => f.flight_number).join(' · ') || null,
+    },
+    {
+      label: 'PAX TOTAL',
+      value: kpis.totalPax || 0,
+      color: C.blueLight,
+      sub: `${flights.filter(f=>computeRealtimeStatus(f)==='scheduled').length} vol(s) restant(s)`,
+      accent: C.borderHi,
+    },
+    {
+      label: 'REMPLISSAGE',
+      value: `${kpis.fillRate || 0}%`,
+      color: (kpis.fillRate||0) >= 80 ? C.green : (kpis.fillRate||0) >= 50 ? C.amber : C.textDim,
+      sub: (() => {
+        const totalPax  = flights.reduce((s,f) => s + (f.pax_count||0), 0)
+        const totalSeats= flights.reduce((s,f) => s + (f.max_pax||9), 0)
+        return `${totalPax} / ${totalSeats} sièges`
+      })(),
+      accent: (kpis.fillRate||0) >= 80 ? C.green : (kpis.fillRate||0) >= 50 ? C.amber : C.borderHi,
+      bar: kpis.fillRate || 0,
+    },
+  ]
+  return (
+    <div className="kpi-strip" style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:1, backgroundColor:C.border, flexShrink:0 }}>
+      {stats.map((s, i) => (
+        <div key={i} style={{
+          backgroundColor: s.pulse ? 'rgba(212,168,67,0.04)' : C.bgPanel,
+          padding:'10px 16px', position:'relative', overflow:'hidden',
+        }}>
+          {/* Accent top border */}
+          <div style={{ position:'absolute', top:0, left:0, right:0, height:2, backgroundColor:s.accent }}/>
+
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:4 }}>
+            <div style={{ fontSize:8, fontWeight:700, letterSpacing:'0.15em', color:C.textDim }}>{s.label}</div>
+            {s.pulse && <Dot color={C.gold} pulse/>}
+          </div>
+
+          <div style={{ fontSize:22, fontWeight:900, color:s.color, fontFamily:'monospace', lineHeight:1 }}>
+            {s.value}
+          </div>
+
+          {/* Barre remplissage inline */}
+          {s.bar !== undefined && (
+            <div style={{ margin:'6px 0 4px', height:2, backgroundColor:C.border, borderRadius:1, overflow:'hidden' }}>
+              <div style={{
+                height:'100%', borderRadius:1, transition:'width 0.6s',
+                width:`${s.bar}%`,
+                backgroundColor: s.bar >= 80 ? C.green : s.bar >= 50 ? C.amber : C.blueLight,
+              }}/>
+            </div>
+          )}
+
+          <div style={{ fontSize:9, color:C.textFaint, marginTop: s.bar !== undefined ? 0 : 4, lineHeight:1.3 }}>{s.sub}</div>
+          {s.detail && (
+            <div style={{ fontSize:9, color:C.gold, marginTop:2, fontFamily:'monospace', letterSpacing:'0.05em' }}>{s.detail}</div>
+          )}
         </div>
-        <span style={{ fontSize:22, opacity:0.2 }}>{icon}</span>
+      ))}
+    </div>
+  )
+}
+
+// ── Flight Row ───────────────────────────────────────────────────────────────
+function FlightRow({ flight, onClick, compact }) {
+  const dep    = toDate(flight.departure_time)
+  const arr    = toDate(flight.arrival_time)
+  const status = computeRealtimeStatus(flight)
+  const ss     = STATUS_STYLE[status] || STATUS_STYLE.scheduled
+  const orig   = AIRPORTS_FULL[flight.origin]?.short    || flight.origin
+  const dest   = AIRPORTS_FULL[flight.destination]?.short || flight.destination
+  const dur    = arr ? Math.round((arr - dep) / 60000) : null
+
+  return (
+    <div onClick={onClick} style={{
+      display:'flex', alignItems:'center', gap:12,
+      padding: compact ? '8px 16px' : '10px 16px',
+      cursor:'pointer', transition:'background 0.15s',
+      borderBottom:`1px solid ${C.border}`,
+    }}
+      onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.02)'}
+      onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+    >
+      <Dot color={ss.dot} pulse={status === 'in_flight'}/>
+
+      <span style={{ fontFamily:'monospace', fontSize:12, fontWeight:800, color:C.gold, minWidth:52 }}>
+        {flight.flight_number}
+      </span>
+
+      <div style={{ display:'flex', alignItems:'center', gap:6, flex:1, minWidth:0 }}>
+        <span style={{ fontSize:12, fontWeight:700, color:C.text }}>{orig}</span>
+        <span style={{ color:C.textFaint, fontSize:10 }}>→</span>
+        <span style={{ fontSize:12, fontWeight:700, color:C.text }}>{dest}</span>
+        {dur && <span style={{ fontSize:9, color:C.textDim }}>{dur}′</span>}
+      </div>
+
+      <span style={{ fontFamily:'monospace', fontSize:11, color:C.textDim, minWidth:40, textAlign:'right' }}>
+        {fmtTime(dep)}
+      </span>
+
+      <span style={{
+        fontSize:9, fontWeight:700, letterSpacing:'0.08em', padding:'2px 8px', borderRadius:3,
+        color:ss.dot, backgroundColor:ss.bg, border:`1px solid ${ss.border}`,
+        minWidth:80, textAlign:'center',
+      }}>
+        {ss.label.toUpperCase()}
+      </span>
+
+      {!compact && (
+        <span style={{ fontSize:10, color:C.textDim, minWidth:70, textAlign:'right' }}>
+          {flight.aircraft}
+        </span>
+      )}
+    </div>
+  )
+}
+
+// ── Aircraft Row ─────────────────────────────────────────────────────────────
+function AircraftRow({ aircraft, onClick }) {
+  const ep = getPotentialPercent(aircraft.engine_hours, aircraft.engine_limit)
+  const ap = getPotentialPercent(aircraft.airframe_hours, aircraft.airframe_limit)
+  const minPot      = Math.min(ep, ap)
+  const statusColor = aircraft.status === 'maintenance' ? C.red : aircraft.status === 'in_flight' ? C.gold : C.green
+  const alertLevel  = minPot <= 10 ? 'critical' : minPot <= 20 ? 'warning' : null
+  const shortType   = aircraft.type?.includes('EX') ? '208B EX' : '208B'
+  const epColor     = ep <= 10 ? C.red : ep <= 20 ? C.amber : C.green
+  const apColor     = ap <= 10 ? C.red : ap <= 20 ? C.amber : C.blueLight
+
+  return (
+    <div onClick={onClick} style={{
+      display:'flex', alignItems:'center', gap:10, padding:'8px 16px',
+      cursor:'pointer', transition:'background 0.15s', borderBottom:`1px solid ${C.border}`,
+    }}
+      onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.025)'}
+      onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+    >
+      <Dot color={statusColor}/>
+
+      {/* Immatriculation + type */}
+      <div style={{ minWidth:68 }}>
+        <div style={{ fontFamily:'monospace', fontSize:11, fontWeight:800, color:C.text, letterSpacing:'0.04em' }}>
+          {aircraft.registration.replace('F-','')}
+        </div>
+        <div style={{ fontSize:8, color:C.textFaint, marginTop:1 }}>{shortType}</div>
+      </div>
+
+      {/* Barres superposées M / C */}
+      <div style={{ flex:1, display:'flex', flexDirection:'column', gap:3 }}>
+        {/* Moteur — barre fine + label inline */}
+        <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+          <span style={{ fontSize:8, fontWeight:800, color:epColor, width:8, flexShrink:0 }}>M</span>
+          <div style={{ flex:1, height:3, backgroundColor:C.border, borderRadius:2, overflow:'hidden' }}>
+            <div style={{
+              height:'100%', width:`${ep}%`, borderRadius:2,
+              backgroundColor:epColor, transition:'width 0.5s',
+            }}/>
+          </div>
+          <span style={{ fontSize:9, fontFamily:'monospace', color:epColor, width:28, textAlign:'right', flexShrink:0 }}>
+            {ep}%
+          </span>
+        </div>
+        {/* Cellule */}
+        <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+          <span style={{ fontSize:8, fontWeight:800, color:apColor, width:8, flexShrink:0 }}>C</span>
+          <div style={{ flex:1, height:3, backgroundColor:C.border, borderRadius:2, overflow:'hidden' }}>
+            <div style={{
+              height:'100%', width:`${ap}%`, borderRadius:2,
+              backgroundColor:apColor, transition:'width 0.5s',
+            }}/>
+          </div>
+          <span style={{ fontSize:9, fontFamily:'monospace', color:apColor, width:28, textAlign:'right', flexShrink:0 }}>
+            {ap}%
+          </span>
+        </div>
+      </div>
+
+      {/* Badge statut */}
+      <div style={{ minWidth:52, textAlign:'right', flexShrink:0 }}>
+        {aircraft.status === 'maintenance' ? (
+          <Tag color={C.red} border={C.red}>MAINT</Tag>
+        ) : alertLevel === 'critical' ? (
+          <Tag color={C.red} border={C.red}>⚠ CRIT</Tag>
+        ) : alertLevel === 'warning' ? (
+          <Tag color={C.amber} border={C.amber}>⚠ WARN</Tag>
+        ) : (
+          <Tag color={C.textFaint} border={C.borderHi}>OK</Tag>
+        )}
       </div>
     </div>
   )
 }
 
-// ── Carte vol pour le sélecteur DCS ──────────────────────────
-function DCSFlightCard({ flight, selected, onSelect }) {
-  const depTime  = flight.scheduledDeparture?.toDate?.() || toDate(flight.departure_time)
-  const diffMin  = Math.round((depTime - new Date()) / 60000)
-  const isUrgent = diffMin > 0 && diffMin < 30
-  const isPast   = diffMin < -60
+// ── Weather Pill ─────────────────────────────────────────────────────────────
+function WeatherPill({ w }) {
+  const statusColor = { VFR:C.green, MVFR:C.amber, IFR:C.red }[w.status] || C.textDim
+  const statusBg    = { VFR:'rgba(46,204,138,0.07)', MVFR:'rgba(232,150,60,0.08)', IFR:'rgba(224,80,80,0.08)' }[w.status] || 'transparent'
+  const windStr     = w.wind_gust ? `${w.wind_speed}G${w.wind_gust}kt` : `${w.wind_speed}kt`
+  const updatedAgo  = w.updated ? Math.round((Date.now() - w.updated) / 60000) : null
 
   return (
-    <div
-      onClick={() => onSelect(flight)}
-      style={{
-        background: selected ? '#112D52' : '#071729',
-        borderRadius:12, padding:'14px 16px',
-        border:`2px solid ${selected ? '#F0B429' : isUrgent ? 'rgba(240,180,41,0.3)' : '#1E3A5F'}`,
-        cursor:'pointer', transition:'all 0.2s', opacity: isPast ? 0.4 : 1,
-      }}
-    >
+    <div style={{
+      display:'flex', alignItems:'center', gap:10, padding:'9px 16px',
+      borderBottom:`1px solid ${C.border}`,
+      borderLeft:`2px solid ${statusColor}`,
+      backgroundColor: statusBg,
+      transition:'background 0.2s',
+    }}>
+      {/* ICAO + nom */}
+      <div style={{ minWidth:80 }}>
+        <span style={{ fontSize:11, fontWeight:800, color:C.text, fontFamily:'monospace', letterSpacing:'0.04em' }}>{w.icao}</span>
+        <div style={{ fontSize:9, color:C.textDim, marginTop:1 }}>{w.name}</div>
+      </div>
+
+      {/* Données météo */}
+      <div style={{ flex:1, display:'flex', gap:14, flexWrap:'wrap', alignItems:'center' }}>
+        <span style={{ fontSize:12, fontFamily:'monospace', fontWeight:700, color:C.text }}>{w.temp}°C</span>
+        <span style={{ fontSize:10, color:C.textDim }}>{w.wind_dir} {windStr}</span>
+        {w.ceiling && (
+          <span style={{ fontSize:9, color:C.amber }}>☁ {w.ceiling}ft</span>
+        )}
+        {w.vis && w.vis < 10 && (
+          <span style={{ fontSize:9, color:w.vis < 5 ? C.red : C.amber }}>👁 {w.vis}km</span>
+        )}
+      </div>
+
+      {/* Statut + heure */}
+      <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:3 }}>
+        <Tag color={statusColor}>{w.status}</Tag>
+        {updatedAgo !== null && (
+          <span style={{ fontSize:8, color:C.textFaint }}>{updatedAgo === 0 ? 'à l\'instant' : `${updatedAgo} min`}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Panel (boîte réutilisable) ────────────────────────────────────────────────
+function Panel({ title, label, action, onAction, children, style }) {
+  return (
+    <div style={{
+      backgroundColor:C.bgPanel, border:`1px solid ${C.border}`,
+      display:'flex', flexDirection:'column', ...style,
+    }}>
+      <div style={{
+        display:'flex', alignItems:'center', justifyContent:'space-between',
+        padding:'10px 16px', borderBottom:`1px solid ${C.border}`,
+        flexShrink:0,
+      }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+          {label && <Tag color={C.goldDim} bg='rgba(212,168,67,0.06)' border='rgba(212,168,67,0.2)'>{label}</Tag>}
+          <span style={{ fontSize:11, fontWeight:700, color:C.text, letterSpacing:'0.05em' }}>{title}</span>
+        </div>
+        {onAction && (
+          <button onClick={onAction} style={{
+            fontSize:10, color:C.gold, background:'none', border:'none', cursor:'pointer',
+            letterSpacing:'0.05em', padding:0,
+          }}>{action || 'Voir tout →'}</button>
+        )}
+      </div>
+      <div style={{ flex:1, overflow:'hidden' }}>{children}</div>
+    </div>
+  )
+}
+
+// ── DCS Flight Card ───────────────────────────────────────────────────────────
+function DCSFlightCard({ flight, selected, onSelect }) {
+  const dep    = toDate(flight.departure_time)
+  const arr    = flight.arrival_time ? toDate(flight.arrival_time) : null
+  const now    = new Date()
+  const status = computeRealtimeStatus(flight)
+  const ss     = STATUS_STYLE[status] || STATUS_STYLE.scheduled
+  const diffMin = Math.round((dep - now) / 60000)
+
+  const fmtT = d => d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit', timeZone:SBH_TZ })
+
+  return (
+    <div onClick={() => onSelect(normalizeFlight(flight))} style={{
+      padding:'11px 14px', cursor:'pointer', transition:'all 0.15s',
+      borderLeft:`2px solid ${selected ? C.gold : ss.dot}`,
+      backgroundColor: selected ? 'rgba(212,168,67,0.06)' : 'transparent',
+      borderBottom:`1px solid ${C.border}`,
+    }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
         <div>
-          <div style={{ fontSize:16, fontWeight:900, color:'#F1F5F9', letterSpacing:'0.05em' }}>
-            {flight.flight_number || flight.flightNumber}
+          <div style={{ display:'flex', alignItems:'center', gap:7, marginBottom:3 }}>
+            <Dot color={ss.dot} pulse={status === 'in_flight'}/>
+            <span style={{ fontFamily:'monospace', fontSize:13, fontWeight:900, color:C.gold }}>
+              {flight.flight_number || flight.flightNumber}
+            </span>
           </div>
-          <div style={{ fontSize:12, color:'#5B8DB8', marginTop:2 }}>
+          <div style={{ fontSize:10, color:C.textDim, paddingLeft:16 }}>
             {flight.origin} → {flight.destination}
           </div>
-          <div style={{ fontSize:10, color:'#2D5580', marginTop:2 }}>
+          <div style={{ fontSize:9, color:C.textFaint, paddingLeft:16, marginTop:1 }}>
             {flight.aircraft || flight.registration}
           </div>
         </div>
         <div style={{ textAlign:'right' }}>
-          <div style={{ fontSize:18, fontWeight:900, color: isUrgent ? '#F0B429' : '#F1F5F9' }}>
-            {fmtTime(depTime)}
+          <div style={{ fontFamily:'monospace', fontSize:16, fontWeight:900, color: status==='in_flight' ? C.gold : C.text }}>
+            {fmtT(dep)}
           </div>
           <div style={{
-            marginTop:4, padding:'2px 8px', borderRadius:999, fontSize:10, fontWeight:700,
-            background: isPast ? 'rgba(30,58,95,0.3)' : isUrgent ? 'rgba(240,180,41,0.15)' : 'rgba(59,130,246,0.15)',
-            color: isPast ? '#2D5580' : isUrgent ? '#F0B429' : '#93C5FD',
+            marginTop:4, padding:'2px 8px', borderRadius:2,
+            fontSize:9, fontWeight:800, letterSpacing:'0.08em',
+            color:ss.dot, backgroundColor:ss.bg, border:`1px solid ${ss.border}`,
           }}>
-            {isPast
-              ? 'Parti'
-              : isUrgent
-                ? `${diffMin} min`
-                : diffMin < 0
-                  ? 'En cours'
-                  : `${Math.floor(diffMin/60)}h${String(diffMin%60).padStart(2,'0')}`}
+            {diffMin > 0 && diffMin < 60 ? `${diffMin} min` : ss.label.toUpperCase()}
           </div>
         </div>
       </div>
+      {status === 'in_flight' && arr && (
+        <div style={{ marginTop:8, paddingLeft:16 }}>
+          <div style={{ height:2, background:C.border, borderRadius:1, overflow:'hidden' }}>
+            <div style={{
+              height:'100%', borderRadius:1,
+              background:`linear-gradient(90deg, ${C.gold}, ${C.green})`,
+              width:`${Math.min(100, Math.max(0, ((now-dep)/(arr-dep))*100))}%`,
+            }}/>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
-// ── Section DCS embarquée dans le dashboard ───────────────────
-
+// ── DCS Section ──────────────────────────────────────────────────────────────
 function DCSSectionEmbed({ flights }) {
-  const [todayFlights,    setTodayFlights]    = useState([])
-  const [selectedFlight,  setSelectedFlight]  = useState(null)
-  const [dcsTab,          setDcsTab]          = useState('checkin')
-  const [wbResult,        setWbResult]        = useState(null)
-  const [dcsFullscreen,   setDcsFullscreen]   = useState(false)
+  const [selectedFlight, setSelectedFlight] = useState(null)
+  const [dcsTab,         setDcsTab]         = useState('checkin')
+  const [wbResult,       setWbResult]       = useState(null)
+  const [dcsFullscreen,  setDcsFullscreen]  = useState(false)
+  const [now,            setNow]            = useState(new Date())
 
-
-  // Vols du jour Firestore (fallback mock)
   useEffect(() => {
-    const today    = new Date(); today.setHours(0,0,0,0)
-    const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1)
-    try {
-      const q = query(
-        collection(db, 'flight_plans'),
-        where('scheduledDeparture', '>=', today),
-        where('scheduledDeparture', '<', tomorrow),
-        orderBy('scheduledDeparture', 'asc')
-      )
-      const unsub = onSnapshot(q,
-        snap => {
-          const data = snap.docs.map(d => ({ id:d.id, ...d.data() }))
-          setTodayFlights(data.length > 0 ? data : flights)
-        },
-        () => setTodayFlights(flights)
-      )
-      return () => unsub()
-    } catch {
-      setTodayFlights(flights)
-    }
-  }, [flights])
+    const t = setInterval(() => setNow(new Date()), 30_000)
+    return () => clearInterval(t)
+  }, [])
 
-  // Auto-sélection prochain vol
+  const todayFlights = useMemo(() =>
+    [...flights]
+      .map(f => ({ ...f, _rs: computeRealtimeStatus(f) }))
+      .sort((a, b) => {
+        const da = a.departure_time?.toDate?.() || new Date(0)
+        const db_ = b.departure_time?.toDate?.() || new Date(0)
+        return da - db_
+      }),
+    [flights, now]
+  )
+
   useEffect(() => {
-    if (!selectedFlight && todayFlights.length > 0) {
-      const now  = new Date()
-      const next = todayFlights.find(f => {
-        const dep = f.scheduledDeparture?.toDate?.() || toDate(f.departure_time)
-        return dep > now
-      })
-      setSelectedFlight(next || todayFlights[0])
+    if (todayFlights.length === 0) return
+    if (selectedFlight) {
+      const updated = todayFlights.find(f => f.id === selectedFlight.id)
+      if (updated) setSelectedFlight(normalizeFlight(updated))
+      return
     }
-  }, [todayFlights, selectedFlight])
+    const priority = todayFlights.find(f => ['boarding','in_flight'].includes(computeRealtimeStatus(f)))
+      || todayFlights.find(f => computeRealtimeStatus(f) === 'scheduled')
+      || todayFlights[0]
+    if (priority) setSelectedFlight(normalizeFlight(priority))
+  }, [todayFlights])
+
+  const kpis = useMemo(() => ({
+    total:      todayFlights.length,
+    enCours:    todayFlights.filter(f => ['in_flight','boarding'].includes(f._rs)).length,
+    programmes: todayFlights.filter(f => f._rs === 'scheduled').length,
+    totalPax:   todayFlights.reduce((s,f) => s + (f.pax_count || 0), 0),
+  }), [todayFlights])
 
   const DCS_TABS = [
-    { id:'checkin', label:'Check-in', icon:'✓' },
-    { id:'wb',      label:'W&B',      icon:'⚖' },
+    { id:'checkin', label:'CHECK-IN', icon:'✓' },
+    { id:'wb',      label:'W & B',   icon:'⚖' },
   ]
+
+  const CheckinPanel = () => (
+    <div style={{ height:'100%', display:'flex', flexDirection:'column' }}>
+      {/* Tabs */}
+      <div style={{ display:'flex', borderBottom:`1px solid ${C.border}`, flexShrink:0 }}>
+        {DCS_TABS.map(t => (
+          <button key={t.id} onClick={() => setDcsTab(t.id)} style={{
+            flex:1, padding:'10px', border:'none', background:'none', cursor:'pointer',
+            borderBottom:`2px solid ${dcsTab===t.id ? C.gold : 'transparent'}`,
+            color: dcsTab===t.id ? C.gold : C.textDim,
+            fontSize:10, fontWeight:800, letterSpacing:'0.1em',
+          }}>
+            {t.icon} {t.label}
+          </button>
+        ))}
+        <button onClick={() => setDcsFullscreen(true)} style={{
+          padding:'0 14px', border:'none', background:'none',
+          borderLeft:`1px solid ${C.border}`, color:C.textFaint,
+          cursor:'pointer', fontSize:14, flexShrink:0,
+        }}
+          onMouseEnter={e => e.currentTarget.style.color=C.gold}
+          onMouseLeave={e => e.currentTarget.style.color=C.textFaint}
+        >⤢</button>
+      </div>
+      <div style={{ flex:1, overflowY:'auto' }}>
+        {dcsTab === 'checkin' && <PassengerCheckin flight={selectedFlight}/>}
+        {dcsTab === 'wb' && (
+          <WBCalculator
+            initialRegistration={selectedFlight?.registration || selectedFlight?.aircraft}
+            onResult={setWbResult}
+            flightId={selectedFlight?.id}
+          />
+        )}
+      </div>
+      {wbResult && dcsTab !== 'wb' && (
+        <div style={{
+          padding:'8px 16px', borderTop:`1px solid ${C.border}`,
+          display:'flex', alignItems:'center', gap:8, fontSize:10, flexShrink:0,
+        }}>
+          <Tag color={wbResult.isValid ? C.green : C.red} border={wbResult.isValid ? C.green : C.red}>
+            W&B {wbResult.isValid ? '✓ CONFORME' : '✗ HORS LIMITES'}
+          </Tag>
+          <span style={{ color:C.textDim }}>TOW: {wbResult.takeoffWeight} kg · CG: {wbResult.takeoffCG?.toFixed(3)} m</span>
+        </div>
+      )}
+    </div>
+  )
 
   return (
     <div>
-      {/* KPIs */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-        <KPICard label="Vols du jour" value={todayFlights.length}                                                                         color="#FFFFFF" icon="✈"  sub={`${todayFlights.filter(f=>f.status==='landed').length} atterris`}/>
-        <KPICard label="En cours"     value={todayFlights.filter(f=>f.status==='in_flight'||f.status==='boarding').length}                 color="#F0B429" icon="🛫" sub="temps reel"/>
-        <KPICard label="Programmes"   value={todayFlights.filter(f=>f.status==='scheduled').length}                                        color="#7DD3FC" icon="📋" sub="a venir"/>
-        <KPICard label="Total pax"    value={todayFlights.reduce((s,f) => s + (f.pax_count || 0), 0)}                                     color="#4ADE80" icon="👥" sub="aujourd'hui"/>
+      {/* KPI bar */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:1, backgroundColor:C.border, marginBottom:1 }}>
+        {[
+          { l:'VOLS', v:kpis.total,      c:C.text },
+          { l:'EN COURS', v:kpis.enCours,c:C.gold },
+          { l:'PROGRAMMÉS', v:kpis.programmes, c:C.blueLight },
+          { l:'PAX', v:kpis.totalPax,    c:C.green },
+        ].map((k,i) => (
+          <div key={i} style={{ backgroundColor:C.bgPanel, padding:'10px 14px' }}>
+            <div style={{ fontSize:8, fontWeight:700, letterSpacing:'0.15em', color:C.textDim }}>{k.l}</div>
+            <div style={{ fontSize:22, fontWeight:900, fontFamily:'monospace', color:k.c, marginTop:2 }}>{k.v}</div>
+          </div>
+        ))}
       </div>
 
-      {/* Layout 2 colonnes : liste vols | zone check-in */}
-      <div style={{ display:'grid', gridTemplateColumns:'260px 1fr', gap:20, alignItems:'flex-start' }}>
-
-        {/* Colonne vols */}
-        <div>
-          <div style={{ fontSize:10, fontWeight:700, color:'#2D5580', letterSpacing:'0.15em', textTransform:'uppercase', marginBottom:10 }}>
-            Vols du jour
+      {/* Layout */}
+      <div style={{ display:'grid', gridTemplateColumns:'240px 1fr', gap:1, backgroundColor:C.border }}>
+        {/* Liste vols */}
+        <div style={{ backgroundColor:C.bgPanel, overflowY:'auto', maxHeight:600 }}>
+          <div style={{ padding:'8px 16px', borderBottom:`1px solid ${C.border}` }}>
+            <span style={{ fontSize:9, fontWeight:700, letterSpacing:'0.15em', color:C.textDim }}>VOLS · AST</span>
           </div>
-          <div style={{ display:'flex', flexDirection:'column', gap:8, maxHeight:580, overflowY:'auto' }}>
-            {todayFlights.length === 0 ? (
-              <div style={{ padding:24, textAlign:'center', color:'#2D5580', fontSize:13 }}>
-                Aucun vol planifie
-              </div>
-            ) : todayFlights.map(f => (
-              <DCSFlightCard
-                key={f.id}
-                flight={f}
-                selected={selectedFlight?.id === f.id}
-                onSelect={setSelectedFlight}
-              />
-            ))}
-          </div>
-
-          {/* Lien plein écran terrain */}
-          <a
-            href="/dcs"
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{
-              display:'flex', alignItems:'center', justifyContent:'center', gap:6,
-              marginTop:12, padding:'10px', borderRadius:10,
-              backgroundColor:'#F0B429', color:'#0B1F3A',
-              fontSize:12, fontWeight:800, textDecoration:'none', letterSpacing:'0.05em',
-            }}
-          >
-            Ouvrir DCS terrain →
+          {todayFlights.length === 0 ? (
+            <div style={{ padding:32, textAlign:'center', color:C.textFaint, fontSize:12 }}>Aucun vol planifié</div>
+          ) : todayFlights.map(f => (
+            <DCSFlightCard key={f.id} flight={f} selected={selectedFlight?.id === f.id} onSelect={setSelectedFlight}/>
+          ))}
+          <a href="/dcs" target="_blank" rel="noopener noreferrer" style={{
+            display:'block', margin:12, padding:'9px',
+            textAlign:'center', borderRadius:4,
+            backgroundColor:C.gold, color:'#06080F',
+            fontSize:10, fontWeight:900, textDecoration:'none', letterSpacing:'0.08em',
+          }}>
+            OUVRIR DCS TERRAIN →
           </a>
         </div>
 
-        {/* Zone check-in / W&B */}
-        <div style={{ background:'#071729', borderRadius:16, border:'1px solid #1E3A5F', overflow:'hidden' }}>
+        {/* Zone check-in */}
+        <div style={{ backgroundColor:C.bgPanel }}>
           {!selectedFlight ? (
-            <div style={{ padding:60, textAlign:'center', color:'#2D5580' }}>
-              <div style={{ fontSize:40, marginBottom:12 }}>🛂</div>
-              <div style={{ fontWeight:700, color:'#5B8DB8', fontSize:15 }}>Selectionnez un vol</div>
-              <div style={{ fontSize:12, marginTop:6 }}>pour demarrer le check-in</div>
+            <div style={{ height:300, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', color:C.textFaint }}>
+              <div style={{ fontSize:32, marginBottom:12 }}>🛂</div>
+              <div style={{ fontWeight:700, fontSize:13, color:C.textDim }}>Sélectionner un vol</div>
+              <div style={{ fontSize:11, marginTop:4 }}>pour démarrer le check-in</div>
             </div>
-          ) : (
-            <>
-              {/* Tabs + bouton agrandir */}
-              <div style={{ display:'flex', borderBottom:'1px solid #1E3A5F', alignItems:'stretch' }}>
-                {DCS_TABS.map(t => (
-                  <button
-                    key={t.id}
-                    onClick={() => setDcsTab(t.id)}
-                    style={{
-                      flex:1, padding:'12px 8px', border:'none', background:'none', cursor:'pointer',
-                      borderBottom:`3px solid ${dcsTab===t.id ? '#F0B429' : 'transparent'}`,
-                      color: dcsTab===t.id ? '#F0B429' : '#5B8DB8',
-                      fontSize:12, fontWeight:700, transition:'all 0.15s',
-                    }}
-                  >
-                    <span style={{ fontSize:15, marginRight:6 }}>{t.icon}</span>{t.label}
-                  </button>
-                ))}
-                {/* Bouton agrandir */}
-                <button
-                  onClick={() => setDcsFullscreen(true)}
-                  title="Agrandir"
-                  style={{
-                    padding:'0 14px', border:'none', background:'none', cursor:'pointer',
-                    borderLeft:'1px solid #1E3A5F', color:'#2D5580', fontSize:16,
-                    transition:'color 0.15s', flexShrink:0,
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.color='#F0B429'}
-                  onMouseLeave={e => e.currentTarget.style.color='#2D5580'}
-                >
-                  ⤢
-                </button>
-              </div>
-
-              {/* Contenu tabs */}
-              <div style={{ maxHeight:620, overflowY:'auto' }}>
-                {dcsTab === 'checkin' && <PassengerCheckin flight={selectedFlight}/>}
-                {dcsTab === 'wb' && (
-                  <WBCalculator
-                    initialRegistration={selectedFlight.aircraft || selectedFlight.registration}
-                    onResult={setWbResult}
-                    flightId={selectedFlight?.id}
-                  />
-                )}
-              </div>
-
-              {/* Badge W&B persistant */}
-              {wbResult && dcsTab !== 'wb' && (
-                <div style={{
-                  padding:'8px 16px', borderTop:'1px solid #1E3A5F',
-                  display:'flex', alignItems:'center', gap:8, fontSize:11,
-                }}>
-                  <span style={{
-                    padding:'2px 8px', borderRadius:999, fontWeight:700, fontSize:10,
-                    background: wbResult.isValid ? '#dcfce7' : '#fee2e2',
-                    color:      wbResult.isValid ? '#16a34a' : '#dc2626',
-                  }}>
-                    W&B {wbResult.isValid ? 'CONFORME' : 'HORS LIMITES'}
-                  </span>
-                  <span style={{ color:'#2D5580' }}>
-                    TOW: {wbResult.takeoffWeight} kg · CG: {wbResult.takeoffCG?.toFixed(3)} m
-                  </span>
-                </div>
-              )}
-            </>
-          )}
+          ) : <CheckinPanel/>}
         </div>
       </div>
 
-      {/* ── Overlay plein écran DCS ── */}
+      {/* Plein écran */}
       {dcsFullscreen && selectedFlight && (
         <>
-          {/* Fond */}
-          <div
-            style={{ position:'fixed', inset:0, backgroundColor:'rgba(7,23,41,0.92)', zIndex:200, backdropFilter:'blur(4px)' }}
-            onClick={() => setDcsFullscreen(false)}
-          />
-          {/* Panel */}
+          <div style={{ position:'fixed', inset:0, backgroundColor:'rgba(0,0,0,0.85)', zIndex:200 }} onClick={() => setDcsFullscreen(false)}/>
           <div style={{
-            position:'fixed', inset:'24px', zIndex:201,
-            background:'#071729', borderRadius:20, border:'1px solid #1E3A5F',
+            position:'fixed', inset:24, zIndex:201,
+            backgroundColor:C.bgPanel, border:`1px solid ${C.borderHi}`,
             display:'flex', flexDirection:'column', overflow:'hidden',
-            boxShadow:'0 32px 80px rgba(0,0,0,0.6)',
           }}>
-            {/* Header overlay */}
-            <div style={{
-              display:'flex', alignItems:'center', justifyContent:'space-between',
-              padding:'0 20px', borderBottom:'1px solid #1E3A5F', flexShrink:0,
-            }}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 20px', borderBottom:`1px solid ${C.border}`, flexShrink:0 }}>
               <div style={{ display:'flex', flex:1 }}>
                 {DCS_TABS.map(t => (
-                  <button
-                    key={t.id}
-                    onClick={() => setDcsTab(t.id)}
-                    style={{
-                      padding:'14px 20px', border:'none', background:'none', cursor:'pointer',
-                      borderBottom:`3px solid ${dcsTab===t.id ? '#F0B429' : 'transparent'}`,
-                      color: dcsTab===t.id ? '#F0B429' : '#5B8DB8',
-                      fontSize:13, fontWeight:700, transition:'all 0.15s',
-                    }}
-                  >
-                    <span style={{ fontSize:16, marginRight:6 }}>{t.icon}</span>{t.label}
-                  </button>
+                  <button key={t.id} onClick={() => setDcsTab(t.id)} style={{
+                    padding:'14px 20px', border:'none', background:'none', cursor:'pointer',
+                    borderBottom:`2px solid ${dcsTab===t.id ? C.gold : 'transparent'}`,
+                    color: dcsTab===t.id ? C.gold : C.textDim,
+                    fontSize:11, fontWeight:800, letterSpacing:'0.08em',
+                  }}>{t.icon} {t.label}</button>
                 ))}
               </div>
-              {/* Info vol */}
-              <div style={{ padding:'0 20px', textAlign:'center', color:'#5B8DB8', fontSize:12 }}>
-                <span style={{ fontWeight:900, color:'#F0B429', marginRight:8 }}>
-                  {selectedFlight.flight_number || selectedFlight.flightNumber}
-                </span>
-                {selectedFlight.origin} → {selectedFlight.destination}
-              </div>
-              {/* Fermer */}
-              <button
-                onClick={() => setDcsFullscreen(false)}
-                style={{
-                  width:36, height:36, borderRadius:'50%', border:'1px solid #1E3A5F',
-                  background:'transparent', cursor:'pointer', color:'#5B8DB8',
-                  fontSize:18, display:'flex', alignItems:'center', justifyContent:'center',
-                  transition:'all 0.15s', flexShrink:0,
-                }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor='#F87171'; e.currentTarget.style.color='#F87171' }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor='#1E3A5F'; e.currentTarget.style.color='#5B8DB8' }}
-              >
-                ✕
-              </button>
+              <span style={{ fontSize:11, color:C.textDim, marginRight:16 }}>
+                <span style={{ fontFamily:'monospace', fontWeight:900, color:C.gold }}>{selectedFlight.flightNumber || selectedFlight.flight_number}</span>
+                {' · '}{selectedFlight.origin} → {selectedFlight.destination}
+              </span>
+              <button onClick={() => setDcsFullscreen(false)} style={{
+                width:32, height:32, border:`1px solid ${C.border}`, borderRadius:2,
+                background:'transparent', cursor:'pointer', color:C.textDim, fontSize:16,
+                display:'flex', alignItems:'center', justifyContent:'center',
+              }}>✕</button>
             </div>
-
-            {/* Contenu plein écran */}
             <div style={{ flex:1, overflowY:'auto' }}>
               {dcsTab === 'checkin' && <PassengerCheckin flight={selectedFlight}/>}
               {dcsTab === 'wb' && (
                 <WBCalculator
-                  initialRegistration={selectedFlight.aircraft || selectedFlight.registration}
+                  initialRegistration={selectedFlight?.registration || selectedFlight?.aircraft}
                   onResult={setWbResult}
                   flightId={selectedFlight?.id}
                 />
               )}
             </div>
-
-            {/* Badge W&B en bas */}
-            {wbResult && dcsTab !== 'wb' && (
-              <div style={{
-                padding:'10px 20px', borderTop:'1px solid #1E3A5F',
-                display:'flex', alignItems:'center', gap:10, fontSize:12, flexShrink:0,
-              }}>
-                <span style={{
-                  padding:'3px 10px', borderRadius:999, fontWeight:700, fontSize:11,
-                  background: wbResult.isValid ? '#dcfce7' : '#fee2e2',
-                  color:      wbResult.isValid ? '#16a34a' : '#dc2626',
-                }}>
-                  W&B {wbResult.isValid ? '✓ CONFORME' : '✗ HORS LIMITES'}
-                </span>
-                <span style={{ color:'#2D5580' }}>
-                  TOW: {wbResult.takeoffWeight} kg · CG: {wbResult.takeoffCG?.toFixed(3)} m
-                </span>
-              </div>
-            )}
           </div>
         </>
       )}
@@ -432,35 +683,496 @@ function DCSSectionEmbed({ flights }) {
   )
 }
 
-// ── Dashboard principal ───────────────────────────────────────
+// ── SIDEBAR NAV ───────────────────────────────────────────────────────────────
+const NAV_ITEMS = [
+  { id:'dashboard',  icon:'⊞',  label:'Vue d\'ensemble' },
+  { id:'planning',   icon:'▦',  label:'Planning',    subs:[{id:'gantt',label:'Gantt'},{id:'flights',label:'Vols'},{id:'crew',label:'Équipage'}] },
+  { id:'fleet',      icon:'✈',  label:'Flotte',      subs:[{id:'aircraft',label:'Appareils'},{id:'maintenance',label:'Maintenance'}] },
+  { id:'operations', icon:'◉',  label:'Opérations',  subs:[{id:'livemap',label:'Live Map'},{id:'weather',label:'Météo'}] },
+  { id:'dcs',        icon:'🛂', label:'Ops Sol' },
+  { id:'alerts',     icon:'◬',  label:'Alertes' },
+]
+
+function Sidebar({ activeSection, activeSub, onNav, onSubNav, hasAlert, user, role, onProfile, onLogout }) {
+  const [collapsed, setCollapsed] = useState(false)
+  const [expanded,  setExpanded]  = useState({})
+
+  const toggle = (id) => setExpanded(e => ({ ...e, [id]: !e[id] }))
+
+  return (
+    <aside className="sidebar-full" style={{
+      width: collapsed ? 52 : 200, flexShrink:0, transition:'width 0.2s',
+      backgroundColor:C.bgPanel, borderRight:`1px solid ${C.border}`,
+      display:'flex', flexDirection:'column',
+      position:'sticky', top:0, height:'100vh', zIndex:50, overflow:'hidden',
+    }}>
+      {/* Logo */}
+      <div style={{ padding: collapsed ? '16px 0' : '16px 14px', borderBottom:`1px solid ${C.border}`, flexShrink:0 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10, justifyContent: collapsed ? 'center' : 'flex-start' }}>
+          <div style={{
+            width:28, height:28, borderRadius:3, flexShrink:0,
+            background:`linear-gradient(135deg, ${C.gold} 0%, #8A6020 100%)`,
+            display:'flex', alignItems:'center', justifyContent:'center',
+            fontFamily:'monospace', fontSize:12, fontWeight:900, color:'#06080F',
+          }}>O</div>
+          <div className="sidebar-logo-text" style={{ display: collapsed ? 'none' : 'block' }}>
+            <div style={{ fontFamily:'monospace', fontSize:13, fontWeight:900, color:C.text, letterSpacing:'0.08em' }}>OPSAIR</div>
+            <div style={{ fontSize:8, fontWeight:700, color:C.goldDim, letterSpacing:'0.15em' }}>OPS PLATFORM</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Nav items */}
+      <nav style={{ flex:1, overflowY:'auto', padding:'8px 0' }}>
+        {NAV_ITEMS.map(item => {
+          const isActive = activeSection === item.id
+          const isExpanded = expanded[item.id]
+          const alertDot = item.id === 'alerts' && hasAlert
+
+          return (
+            <div key={item.id}>
+              <button className="sidebar-nav-btn" onClick={() => {
+                if (item.subs) { toggle(item.id); onNav(item.id) }
+                else onNav(item.id)
+              }} style={{
+                width:'100%', display:'flex', alignItems:'center',
+                gap:10, padding: collapsed ? '10px 0' : '9px 14px',
+                justifyContent: collapsed ? 'center' : 'flex-start',
+                border:'none', cursor:'pointer', position:'relative',
+                backgroundColor: isActive ? 'rgba(212,168,67,0.08)' : 'transparent',
+                borderLeft:`2px solid ${isActive ? C.gold : 'transparent'}`,
+                transition:'all 0.15s',
+              }}>
+                <span style={{ fontSize:14, position:'relative', flexShrink:0 }}>
+                  {item.icon}
+                  {alertDot && (
+                    <span style={{
+                      position:'absolute', top:-3, right:-3, width:6, height:6, borderRadius:'50%',
+                      backgroundColor:C.red, boxShadow:`0 0 5px ${C.red}`,
+                    }}/>
+                  )}
+                </span>
+                <span className="sidebar-label" style={{ display: collapsed ? 'none' : 'flex', alignItems:'center', flex:1, gap:0 }}>
+                  <span style={{ fontSize:11, fontWeight:700, color: isActive ? C.gold : C.textDim, flex:1, textAlign:'left', letterSpacing:'0.04em' }}>
+                    {item.label}
+                  </span>
+                  {item.subs && (
+                    <span className="sidebar-chevron" style={{ fontSize:8, color:C.textFaint, transform: isExpanded ? 'rotate(180deg)' : 'none', transition:'transform 0.15s' }}>▼</span>
+                  )}
+                </span>
+              </button>
+
+              {/* Sous-items */}
+              {!collapsed && item.subs && isExpanded && (
+                <div style={{ paddingLeft:24, paddingBottom:4 }}>
+                  {item.subs.map(sub => (
+                    <button key={sub.id} onClick={() => onSubNav(item.id, sub.id)} style={{
+                      width:'100%', display:'block', padding:'6px 12px',
+                      border:'none', cursor:'pointer', textAlign:'left',
+                      backgroundColor: activeSub === sub.id ? 'rgba(212,168,67,0.06)' : 'transparent',
+                      color: activeSub === sub.id ? C.gold : C.textFaint,
+                      fontSize:10, fontWeight:600, letterSpacing:'0.04em',
+                      borderLeft:`1px solid ${activeSub === sub.id ? C.goldDim : C.border}`,
+                      transition:'all 0.1s',
+                    }}>{sub.label}</button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </nav>
+
+      {/* User */}
+      <div style={{ borderTop:`1px solid ${C.border}`, padding: collapsed ? '10px 0' : '12px 14px', flexShrink:0 }}>
+        <button onClick={onProfile} style={{
+          width:'100%', display:'flex', alignItems:'center',
+          gap: collapsed ? 0 : 9, justifyContent: collapsed ? 'center' : 'flex-start',
+          border:'none', background:'none', cursor:'pointer', padding: collapsed ? '4px 0' : '4px 0',
+        }}>
+          <div style={{
+            width:28, height:28, borderRadius:'50%', flexShrink:0,
+            background:`linear-gradient(135deg, ${C.borderHi}, ${C.bgCard})`,
+            border:`1px solid ${C.goldDim}`,
+            display:'flex', alignItems:'center', justifyContent:'center',
+            fontSize:11, fontWeight:900, color:C.gold, fontFamily:'monospace',
+          }}>{(user?.email?.[0] || 'U').toUpperCase()}</div>
+          <div className="sidebar-user-detail" style={{ display: collapsed ? 'none' : 'block', flex:1, textAlign:'left', minWidth:0 }}>
+            <div style={{ fontSize:10, fontWeight:700, color:C.text, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+              {user?.email || 'Utilisateur'}
+            </div>
+            <div style={{ fontSize:8, fontWeight:800, color:C.goldDim, letterSpacing:'0.12em', textTransform:'uppercase', marginTop:1 }}>
+              {role || 'USER'}
+            </div>
+          </div>
+        </button>
+        {!collapsed && (
+          <button className="sidebar-logout" onClick={onLogout} style={{
+            width:'100%', marginTop:8, padding:'6px 0',
+            border:`1px solid ${C.border}`, borderRadius:3,
+            background:'none', cursor:'pointer', color:C.textDim,
+            fontSize:10, fontWeight:600, letterSpacing:'0.06em',
+            transition:'all 0.15s',
+          }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor=C.red; e.currentTarget.style.color=C.red }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor=C.border; e.currentTarget.style.color=C.textDim }}
+          >↩ DÉCONNEXION</button>
+        )}
+      </div>
+
+      {/* Collapse toggle */}
+      <button className="sidebar-collapse-btn" onClick={() => setCollapsed(c => !c)} style={{
+        position:'absolute', top:'50%', right:-10, transform:'translateY(-50%)',
+        width:20, height:20, borderRadius:'50%',
+        border:`1px solid ${C.borderHi}`, backgroundColor:C.bgPanel,
+        cursor:'pointer', color:C.textDim, fontSize:9,
+        display:'flex', alignItems:'center', justifyContent:'center',
+      }}>{collapsed ? '›' : '‹'}</button>
+    </aside>
+  )
+}
+
+// ── TOPBAR ────────────────────────────────────────────────────────────────────
+function Topbar({ time, section, hasAlert, onAlerts }) {
+  const sectionLabels = {
+    dashboard:'Vue d\'ensemble', planning:'Planning', fleet:'Flotte',
+    operations:'Opérations', dcs:'Ops Sol — DCS', alerts:'Alertes',
+  }
+
+  return (
+    <header style={{
+      height:48, borderBottom:`1px solid ${C.border}`, backgroundColor:C.bg,
+      display:'flex', alignItems:'center', justifyContent:'space-between',
+      padding:'0 20px', flexShrink:0,
+    }}>
+      {/* Breadcrumb */}
+      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+        <span style={{ fontSize:9, fontWeight:700, color:C.textFaint, letterSpacing:'0.15em' }}>OPSAIR</span>
+        <span style={{ color:C.textFaint, fontSize:10 }}>/</span>
+        <span style={{ fontSize:11, fontWeight:700, color:C.text }}>{sectionLabels[section] || section}</span>
+      </div>
+
+      {/* Centre — horloge */}
+      <div style={{ position:'absolute', left:'50%', transform:'translateX(-50%)', textAlign:'center' }}>
+        <div style={{ fontFamily:'monospace', fontSize:18, fontWeight:900, color:C.gold, letterSpacing:'0.05em' }}>
+          {fmtClock(time)}
+        </div>
+        <div className="topbar-clock-sub" style={{ fontSize:8, fontWeight:700, color:C.textFaint, letterSpacing:'0.15em', marginTop:1 }}>
+          AST · UTC-4 · {fmtDateShort(time).toUpperCase()}
+        </div>
+      </div>
+
+      {/* Droite — alertes */}
+      <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+        {hasAlert && (
+          <button onClick={onAlerts} style={{
+            display:'flex', alignItems:'center', gap:7, padding:'4px 12px',
+            border:`1px solid rgba(224,80,80,0.4)`, borderRadius:3,
+            backgroundColor:'rgba(224,80,80,0.06)', color:C.red,
+            fontSize:10, fontWeight:700, letterSpacing:'0.08em', cursor:'pointer',
+            animation:'blink 2s ease-in-out infinite',
+          }}>
+            <Dot color={C.red} pulse/>
+            ALERTE ACTIVE
+          </button>
+        )}
+        <span className="topbar-aoc"><Tag color={C.textDim} border={C.border}>FR.AOC.0033</Tag></span>
+      </div>
+    </header>
+  )
+}
+
+// ── DASHBOARD HOME ────────────────────────────────────────────────────────────
+function DashboardHome({ kpis, flights, fleet, weather, onFlightClick, onAircraftClick, onSubNav, fetchWeather, weatherLoading, onCreateFlight }) {
+  const upcomingFlights = flights
+    .filter(f => ['scheduled','boarding','in_flight'].includes(computeRealtimeStatus(f)))
+    .sort((a,b) => toDate(a.departure_time) - toDate(b.departure_time))
+    .slice(0, 8)
+
+  const recentFlights = flights
+    .filter(f => computeRealtimeStatus(f) === 'landed')
+    .sort((a,b) => toDate(b.departure_time) - toDate(a.departure_time))
+    .slice(0, 6)
+
+  const hasUpcoming = upcomingFlights.length > 0
+
+  // Météo — pire statut pour alerte globale
+  const worstWeather = Object.values(weather).reduce((worst, w) => {
+    const rank = { IFR:3, MVFR:2, VFR:1 }
+    return (rank[w.status] || 0) > (rank[worst?.status] || 0) ? w : worst
+  }, null)
+
+  return (
+    <div className="dashboard-grid" style={{ display:'grid', gridTemplateColumns:'1fr 1fr 240px', height:'100%', gap:1, backgroundColor:C.border }}>
+
+      {/* ── COLONNE GAUCHE : vols ── */}
+      <div style={{ gridColumn:1, gridRow:'1/3', backgroundColor:C.bgPanel, display:'flex', flexDirection:'column' }}>
+        {/* Header */}
+        <div style={{
+          display:'flex', alignItems:'center', justifyContent:'space-between',
+          padding:'10px 16px', borderBottom:`1px solid ${C.border}`, flexShrink:0,
+        }}>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <Tag color={C.goldDim} bg='rgba(212,168,67,0.06)' border='rgba(212,168,67,0.2)'>PLANNING</Tag>
+            <span style={{ fontSize:11, fontWeight:700, color:C.text }}>
+              {hasUpcoming ? 'Prochains vols' : 'Vols du jour'}
+            </span>
+            {!hasUpcoming && recentFlights.length > 0 && (
+              <Tag color={C.textFaint} border={C.border}>atterris</Tag>
+            )}
+          </div>
+          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+            <button onClick={onCreateFlight} style={{
+              fontSize:10, fontWeight:800, color:C.gold,
+              background:'none', border:`1px solid ${C.goldDim}`, borderRadius:3,
+              padding:'3px 10px', cursor:'pointer', letterSpacing:'0.06em',
+            }}>+ VOL</button>
+            <button onClick={() => onSubNav('planning','flights')} style={{
+              fontSize:10, color:C.textDim, background:'none', border:'none', cursor:'pointer',
+            }}>Planning →</button>
+          </div>
+        </div>
+
+        {/* Liste */}
+        <div style={{ flex:1, overflowY:'auto' }}>
+          {hasUpcoming ? (
+            upcomingFlights.map(f => <FlightRow key={f.id} flight={f} onClick={() => onFlightClick(f)}/>)
+          ) : recentFlights.length > 0 ? (
+            <>
+              {recentFlights.map(f => <FlightRow key={f.id} flight={f} onClick={() => onFlightClick(f)}/>)}
+            </>
+          ) : (
+            <div style={{
+              flex:1, display:'flex', flexDirection:'column', alignItems:'center',
+              justifyContent:'center', padding:40, gap:16, height:'100%',
+            }}>
+              <div style={{ fontSize:36, opacity:0.3 }}>✈</div>
+              <div style={{ fontSize:12, fontWeight:700, color:C.textDim, textAlign:'center' }}>
+                Aucun vol planifié aujourd'hui
+              </div>
+              <button onClick={onCreateFlight} style={{
+                padding:'8px 20px', backgroundColor:C.gold, color:'#060D1A',
+                border:'none', borderRadius:3, cursor:'pointer',
+                fontSize:11, fontWeight:900, letterSpacing:'0.08em',
+              }}>+ CRÉER UN VOL</button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── COLONNE CENTRE HAUT : météo ── */}
+      <div style={{ gridColumn:2, gridRow:1, backgroundColor:C.bgPanel, display:'flex', flexDirection:'column' }}>
+        <div style={{
+          display:'flex', alignItems:'center', justifyContent:'space-between',
+          padding:'10px 16px', borderBottom:`1px solid ${C.border}`, flexShrink:0,
+        }}>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <Tag color={C.goldDim} bg='rgba(212,168,67,0.06)' border='rgba(212,168,67,0.2)'>AVWX</Tag>
+            <span style={{ fontSize:11, fontWeight:700, color:C.text }}>Météo aérodromes</span>
+            {worstWeather?.status === 'IFR' && (
+              <Tag color={C.red} border={C.red}>⚠ IFR</Tag>
+            )}
+            {worstWeather?.status === 'MVFR' && (
+              <Tag color={C.amber} border={C.amber}>MVFR</Tag>
+            )}
+          </div>
+          <button onClick={fetchWeather} disabled={weatherLoading || !AVWX_KEY} style={{
+            fontSize:10, color: AVWX_KEY ? C.gold : C.textFaint,
+            background:'none', border:'none', cursor: AVWX_KEY ? 'pointer' : 'default',
+          }}>
+            {weatherLoading ? '⟳ Chargement' : AVWX_KEY ? 'Actualiser' : 'DÉMO'}
+          </button>
+        </div>
+        <div>
+          {Object.values(weather).map(w => <WeatherPill key={w.icao} w={w}/>)}
+        </div>
+      </div>
+
+      {/* ── COLONNE CENTRE BAS : flotte ── */}
+      <div style={{ gridColumn:2, gridRow:2, backgroundColor:C.bgPanel, display:'flex', flexDirection:'column' }}>
+        <div style={{
+          display:'flex', alignItems:'center', justifyContent:'space-between',
+          padding:'10px 16px', borderBottom:`1px solid ${C.border}`, flexShrink:0,
+        }}>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <Tag color={C.goldDim} bg='rgba(212,168,67,0.06)' border='rgba(212,168,67,0.2)'>FLEET</Tag>
+            <span style={{ fontSize:11, fontWeight:700, color:C.text }}>État flotte</span>
+          </div>
+          <div style={{ display:'flex', gap:12, alignItems:'center' }}>
+            {/* Légende M / C */}
+            <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+              <span style={{ fontSize:8, color:C.green, fontWeight:800 }}>M</span>
+              <span style={{ fontSize:8, color:C.textFaint }}>moteur</span>
+              <span style={{ fontSize:8, color:C.blueLight, fontWeight:800 }}>C</span>
+              <span style={{ fontSize:8, color:C.textFaint }}>cellule</span>
+            </div>
+            <button onClick={() => onSubNav('fleet','aircraft')} style={{
+              fontSize:10, color:C.textDim, background:'none', border:'none', cursor:'pointer',
+            }}>Détail →</button>
+          </div>
+        </div>
+        <div style={{ overflowY:'auto', flex:1 }}>
+          {fleet.map(a => (
+            <AircraftRow key={a.id||a.registration} aircraft={a} onClick={() => onAircraftClick(a)}/>
+          ))}
+        </div>
+      </div>
+
+      {/* ── COLONNE DROITE : synthèse ── */}
+      <div className="dashboard-right-col" style={{
+        gridColumn:3, gridRow:'1/3', backgroundColor:C.bgPanel,
+        display:'flex', flexDirection:'column', overflow:'hidden',
+      }}>
+
+        {/* Flotte statuts */}
+        <div style={{ padding:'12px 14px', borderBottom:`1px solid ${C.border}` }}>
+          <div style={{ fontSize:8, fontWeight:700, letterSpacing:'0.15em', color:C.textDim, marginBottom:10 }}>FLOTTE</div>
+          {[
+            { label:'Disponibles', count:fleet.filter(a=>a.status==='available').length,   color:C.green  },
+            { label:'En vol',      count:fleet.filter(a=>a.status==='in_flight').length,   color:C.gold   },
+            { label:'Maintenance', count:fleet.filter(a=>a.status==='maintenance').length, color:C.red    },
+          ].map(s => (
+            <div key={s.label} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:7 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                <Dot color={s.color}/>
+                <span style={{ fontSize:10, color:C.textDim }}>{s.label}</span>
+              </div>
+              <span style={{ fontFamily:'monospace', fontSize:16, fontWeight:900, color:s.color }}>{s.count}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Vols statuts */}
+        <div style={{ padding:'12px 14px', borderBottom:`1px solid ${C.border}` }}>
+          <div style={{ fontSize:8, fontWeight:700, letterSpacing:'0.15em', color:C.textDim, marginBottom:10 }}>VOLS</div>
+          {[
+            { label:'Atterris',     count:flights.filter(f=>computeRealtimeStatus(f)==='landed').length,    color:C.green     },
+            { label:'En vol',       count:flights.filter(f=>computeRealtimeStatus(f)==='in_flight').length, color:C.gold      },
+            { label:'Embarquement', count:flights.filter(f=>computeRealtimeStatus(f)==='boarding').length,  color:C.amber     },
+            { label:'Programmés',   count:flights.filter(f=>computeRealtimeStatus(f)==='scheduled').length, color:C.blueLight },
+            { label:'Annulés',      count:flights.filter(f=>computeRealtimeStatus(f)==='cancelled').length, color:C.red       },
+          ].filter(s => s.count > 0 || s.label === 'Programmés').map(s => (
+            <div key={s.label} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                <Dot color={s.color} pulse={s.label==='En vol' && s.count>0}/>
+                <span style={{ fontSize:10, color:C.textDim }}>{s.label}</span>
+              </div>
+              <span style={{ fontFamily:'monospace', fontSize:15, fontWeight:900, color:s.count > 0 ? s.color : C.textFaint }}>
+                {s.count}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* Remplissage */}
+        <div style={{ padding:'12px 14px', flex:1 }}>
+          <div style={{ fontSize:8, fontWeight:700, letterSpacing:'0.15em', color:C.textDim, marginBottom:10 }}>REMPLISSAGE</div>
+
+          {/* Valeur principale */}
+          <div style={{ display:'flex', alignItems:'baseline', gap:6, marginBottom:8 }}>
+            <span style={{
+              fontFamily:'monospace', fontSize:28, fontWeight:900, lineHeight:1,
+              color: (kpis.fillRate||0) >= 80 ? C.green : (kpis.fillRate||0) >= 50 ? C.amber : C.textDim,
+            }}>{kpis.fillRate || 0}%</span>
+            <span style={{ fontSize:9, color:C.textFaint }}>moy. journée</span>
+          </div>
+
+          {/* Barre */}
+          <div style={{ height:5, backgroundColor:C.border, borderRadius:3, overflow:'hidden', marginBottom:6 }}>
+            <div style={{
+              height:'100%', borderRadius:3, transition:'width 0.6s',
+              width:`${kpis.fillRate || 0}%`,
+              backgroundColor: (kpis.fillRate||0) >= 80 ? C.green : (kpis.fillRate||0) >= 50 ? C.amber : C.blueLight,
+            }}/>
+          </div>
+
+          {/* PAX détail */}
+          <div style={{ fontSize:9, color:C.textFaint }}>
+            {kpis.totalPax || 0} pax · {flights.reduce((s,f)=>s+(f.max_pax||9),0)} sièges totaux
+          </div>
+
+          {/* Breakdown par vol */}
+          {flights.filter(f => ['in_flight','boarding'].includes(computeRealtimeStatus(f))).length > 0 && (
+            <div style={{ marginTop:10 }}>
+              <div style={{ fontSize:8, color:C.textFaint, marginBottom:6, letterSpacing:'0.1em' }}>EN COURS</div>
+              {flights.filter(f => ['in_flight','boarding'].includes(computeRealtimeStatus(f))).map(f => {
+                const pct = Math.round((f.pax_count||0)/(f.max_pax||9)*100)
+                return (
+                  <div key={f.id} style={{ marginBottom:6 }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:2 }}>
+                      <span style={{ fontSize:9, fontFamily:'monospace', color:C.gold }}>{f.flight_number}</span>
+                      <span style={{ fontSize:9, color:C.textDim }}>{f.pax_count}/{f.max_pax}</span>
+                    </div>
+                    <div style={{ height:3, backgroundColor:C.border, borderRadius:2, overflow:'hidden' }}>
+                      <div style={{ height:'100%', width:`${pct}%`, borderRadius:2, backgroundColor: pct >= 80 ? C.green : C.blueLight }}/>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── SECTION HEADER ────────────────────────────────────────────────────────────
+function SectionHeader({ title, breadcrumb, subItems, activeSub, onSubNav, section }) {
+  return (
+    <div style={{ flexShrink:0, borderBottom:`1px solid ${C.border}`, backgroundColor:C.bg }}>
+      <div style={{ padding:'12px 20px', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+        <div>
+          {breadcrumb && <div style={{ fontSize:9, fontWeight:700, letterSpacing:'0.15em', color:C.textFaint, marginBottom:3 }}>{breadcrumb}</div>}
+          <h1 style={{ fontSize:18, fontWeight:900, color:C.text, margin:0, fontFamily:'monospace', letterSpacing:'0.04em' }}>{title}</h1>
+        </div>
+        {subItems && (
+          <div style={{ display:'flex', gap:1, backgroundColor:C.border }}>
+            {subItems.map(t => (
+              <button key={t.id} onClick={() => onSubNav(section, t.id)} style={{
+                padding:'7px 16px', border:'none', cursor:'pointer',
+                backgroundColor: activeSub===t.id ? C.bgCard : C.bgPanel,
+                color: activeSub===t.id ? C.gold : C.textDim,
+                fontSize:10, fontWeight:700, letterSpacing:'0.08em',
+                borderBottom:`2px solid ${activeSub===t.id ? C.gold : 'transparent'}`,
+                transition:'all 0.15s',
+              }}>{t.label}</button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ── DASHBOARD PRINCIPAL ──────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
 export default function Dashboard() {
   const { user, role, logout } = useAuth()
   const { fleet: fsFleet }     = useAircraft()
   const { flights: fsFlights, kpis: fsKpis } = useFlights()
 
-  const [tab,               setTab]               = useState('dashboard')
-  const [liveMapFullscreen, setLiveMapFullscreen]  = useState(false)
-  const [time,              setTime]               = useState(new Date())
-  const [weather,           setWeather]            = useState(WEATHER_MOCK)
-  const [weatherLoading,    setWeatherLoading]     = useState(false)
-  const [flightModal,       setFlightModal]        = useState(null)
-  const [aircraftModal,     setAircraftModal]      = useState(null)
-  const [userMenuOpen,      setUserMenuOpen]       = useState(false)
-  const [profileOpen,       setProfileOpen]        = useState(false)
-  const userMenuRef = useRef(null)
+  const [tab,               setTab]              = useState('dashboard')
+  const [liveMapFullscreen, setLiveMapFullscreen] = useState(false)
+  const [time,              setTime]             = useState(new Date())
+  const [weather,           setWeather]          = useState(WEATHER_MOCK)
+  const [weatherLoading,    setWeatherLoading]   = useState(false)
+  const [flightModal,       setFlightModal]      = useState(null)
+  const [aircraftModal,     setAircraftModal]    = useState(null)
+  const [profileOpen,       setProfileOpen]      = useState(false)
+  const [creationModal,     setCreationModal]    = useState(false)
+  const [newFlightInitData, setNewFlightInitData]= useState({})
 
   const fleet   = fsFleet.length   > 0 ? fsFleet   : MOCK_FLEET
   const flights = fsFlights.length > 0 ? fsFlights : MOCK_FLIGHTS
   const kpis    = fsFlights.length > 0 ? fsKpis : {
     total:     MOCK_FLIGHTS.length,
-    completed: MOCK_FLIGHTS.filter(f => f.status === 'landed').length,
-    inFlight:  MOCK_FLIGHTS.filter(f => f.status === 'in_flight').length,
-    cancelled: MOCK_FLIGHTS.filter(f => f.status === 'cancelled').length,
-    totalPax:  MOCK_FLIGHTS.reduce((s, f) => s + f.pax_count, 0),
-    fillRate:  Math.round(
-      MOCK_FLIGHTS.reduce((s,f) => s + f.pax_count, 0) /
-      MOCK_FLIGHTS.reduce((s,f) => s + f.max_pax,   0) * 100
-    ),
+    completed: MOCK_FLIGHTS.filter(f=>f.status==='landed').length,
+    inFlight:  MOCK_FLIGHTS.filter(f=>f.status==='in_flight').length,
+    cancelled: MOCK_FLIGHTS.filter(f=>f.status==='cancelled').length,
+    totalPax:  MOCK_FLIGHTS.reduce((s,f)=>s+f.pax_count,0),
+    fillRate:  Math.round(MOCK_FLIGHTS.reduce((s,f)=>s+f.pax_count,0)/MOCK_FLIGHTS.reduce((s,f)=>s+f.max_pax,0)*100),
   }
 
   useAlertEngine({ fleet, flights, weather, enabled: fleet.length > 0 })
@@ -470,10 +1182,27 @@ export default function Dashboard() {
     getPotentialPercent(a.airframe_hours, a.airframe_limit) <= 20 ||
     a.status === 'maintenance'
   )
+  const hasAlert = maintenanceAlerts.length > 0 || Object.values(weather).some(w=>w.status==='IFR')
 
-  const upcomingFlights = flights
-    .filter(f => f.status === 'scheduled' || f.status === 'boarding')
-    .slice(0, 3)
+  const [subTab, setSubTab] = useState({ planning:'gantt', fleet:'aircraft', operations:'livemap' })
+
+  const setMainTab   = id => setTab(id)
+  const setSubTabFor = (section, sub) => { setSubTab(s=>({...s,[section]:sub})); setTab(section) }
+
+  const resolveTab = rawTab => {
+    const m = { overview:'dashboard', gantt:'planning', flights:'planning', crew:'planning', aircraft:'fleet', maintenance:'fleet', livemap:'operations', weather:'operations' }
+    return m[rawTab] ? [m[rawTab], rawTab] : [rawTab, null]
+  }
+  const [activeSection, _sub0] = resolveTab(tab)
+  const activeSub = _sub0 ?? subTab[activeSection] ?? null
+
+  // Synchro sidebar expand sur tab change
+  useEffect(() => {
+    const item = NAV_ITEMS.find(n => n.id === activeSection)
+    if (item?.subs) {
+      // s'assurer que le parent est ouvert — géré dans Sidebar via isExpanded
+    }
+  }, [activeSection])
 
   const fetchWeather = useCallback(async () => {
     if (!AVWX_KEY) return
@@ -481,639 +1210,401 @@ export default function Dashboard() {
     try {
       const results = await Promise.allSettled(
         ['TFFJ','TFFG','TNCM'].map(icao =>
-          fetch(`https://avwx.rest/api/metar/${icao}?token=${AVWX_KEY}`).then(r => r.json())
+          fetch(`https://avwx.rest/api/metar/${icao}?token=${AVWX_KEY}`).then(r=>r.json())
         )
       )
       const nw = { ...WEATHER_MOCK }
-      results.forEach((r, i) => {
+      results.forEach((r,i) => {
         const icao = ['TFFJ','TFFG','TNCM'][i]
-        if (r.status === 'fulfilled' && r.value?.raw) {
-          const d    = r.value
-          const vis  = d.visibility?.value ?? 10
-          const ceil = d.ceiling?.value    ?? null
-          nw[icao] = {
-            icao, name: WEATHER_MOCK[icao].name,
-            temp:       d.temperature?.value    ?? 0,
-            dewpoint:   d.dewpoint?.value       ?? null,
-            wind_speed: d.wind_speed?.value     ?? 0,
-            wind_gust:  d.wind_gust?.value      ?? null,
-            wind_dir:   d.wind_direction?.repr  ?? '--',
-            wind_deg:   d.wind_direction?.value ?? null,
-            vis, ceiling: ceil,
-            status: (vis < 3 || (ceil && ceil < 500))  ? 'IFR'
-                  : (vis < 5 || (ceil && ceil < 1000)) ? 'MVFR' : 'VFR',
-            raw: d.raw || '', updated: new Date(),
-          }
+        if (r.status==='fulfilled' && r.value?.raw) {
+          const d = r.value; const vis = d.visibility?.value ?? 10; const ceil = d.ceiling?.value ?? null
+          nw[icao] = { icao, name:WEATHER_MOCK[icao].name, temp:d.temperature?.value??0, dewpoint:d.dewpoint?.value??null, wind_speed:d.wind_speed?.value??0, wind_gust:d.wind_gust?.value??null, wind_dir:d.wind_direction?.repr??'--', wind_deg:d.wind_direction?.value??null, vis, ceiling:ceil, status:(vis<3||(ceil&&ceil<500))?'IFR':(vis<5||(ceil&&ceil<1000))?'MVFR':'VFR', raw:d.raw||'', updated:new Date() }
         }
       })
       setWeather(nw)
-    } catch(e) { console.error('AVWX error:', e) }
+    } catch(e) { console.error(e) }
     finally { setWeatherLoading(false) }
   }, [])
 
-  useEffect(() => {
-    fetchWeather()
-    const t = setInterval(fetchWeather, 600_000)
-    return () => clearInterval(t)
-  }, [fetchWeather])
-
-  useEffect(() => {
-    const t = setInterval(() => setTime(new Date()), 1000)
-    return () => clearInterval(t)
-  }, [])
+  useEffect(() => { fetchWeather(); const t=setInterval(fetchWeather,600_000); return()=>clearInterval(t) }, [fetchWeather])
+  useEffect(() => { const t=setInterval(()=>setTime(new Date()),1000); return()=>clearInterval(t) }, [])
 
   const handleFlightClick  = f => setFlightModal(f)
-  const handleCreateFlight = ({ aircraft, hour, minute }) => {
-    const dep = new Date(); dep.setHours(hour, minute, 0, 0)
-    const arr = new Date(dep.getTime() + 25 * 60_000)
-    setFlightModal({ aircraft, departure_time:{ toDate:() => dep }, arrival_time:{ toDate:() => arr } })
+  const handleAircraftClick = a => setAircraftModal(a)
+
+  const handleCreateFlight = ({ aircraft, hour, minute, date, duration } = {}) => {
+    const hStr = hour !== undefined
+      ? `${String(hour).padStart(2,'0')}:${String(minute||0).padStart(2,'0')}`
+      : '08:00'
+    const base = date || new Date()
+    const flightDate = new Intl.DateTimeFormat('en-CA', { timeZone:SBH_TZ }).format(base)
+    let arrStr = ''
+    if (duration && hour !== undefined) {
+      const totalMin = hour*60+(minute||0)+duration
+      arrStr = `${String(Math.floor(totalMin/60)%24).padStart(2,'0')}:${String(totalMin%60).padStart(2,'0')}`
+    }
+    setNewFlightInitData({ aircraft:aircraft||'', departure_time:hStr, arrival_time:arrStr, flight_date:flightDate })
+    setCreationModal(true)
   }
+
+  const handleSaveFlight = async (formData) => {
+    const { Timestamp } = await import('firebase/firestore')
+    await addFlight({
+      flight_number:  formData.flight_number,
+      aircraft:       formData.aircraft,
+      origin:         formData.origin,
+      destination:    formData.destination,
+      departure_time: Timestamp.fromDate(formData.departure_time),
+      arrival_time:   Timestamp.fromDate(formData.arrival_time),
+      pax_count:      formData.pax_count,
+      max_pax:        formData.max_pax,
+      pilot:          formData.pilot || '',
+      status:         formData.status || 'scheduled',
+      notes:          formData.notes  || '',
+      flight_type:    formData.flight_type || 'regular',
+    })
+  }
+
   const handleDropFlight = async (flight, newDep, newArr) => {
     if (!flight.id || !fsFlights.length) return
     try { await updateFlight(flight.id, { departure_time:newDep, arrival_time:newArr }) }
-    catch(e) { console.error('Drop error:', e) }
+    catch(e) { console.error(e) }
   }
 
-  // ── Navigation ────────────────────────────────────────────
-  const NAV = [
-    { id:'dashboard',  icon:'⊞', label:'Dashboard' },
-    {
-      id:'planning', icon:'▦', label:'Planning',
-      subs:[ { id:'gantt', label:'Gantt' }, { id:'flights', label:'Vols' }, { id:'crew', label:'Equipage' } ],
-    },
-    {
-      id:'fleet', icon:'✈', label:'Flotte',
-      subs:[ { id:'aircraft', label:'Appareils' }, { id:'maintenance', label:'Maintenance' } ],
-    },
-    {
-      id:'operations', icon:'🗺', label:'Operations',
-      subs:[ { id:'livemap', label:'Live Map' }, { id:'weather', label:'Meteo' } ],
-    },
-    { id:'dcs',    icon:'🛂', label:'Ops Sol' },
-    { id:'alerts', icon:'🔔', label:'Alertes'  },
-  ]
-
-  const [subTab, setSubTab] = useState({
-    planning:'gantt', fleet:'aircraft', operations:'livemap',
-  })
-
-  const setMainTab   = id => setTab(id)
-  const setSubTabFor = (section, sub) => {
-    setSubTab(s => ({ ...s, [section]: sub }))
-    setTab(section)
-  }
-
-  const resolveTab = rawTab => {
-    const m = {
-      overview:'dashboard', gantt:'planning', flights:'planning', crew:'planning',
-      fleet:'fleet', maintenance:'fleet', livemap:'operations', weather:'operations',
-    }
-    return m[rawTab] ? [m[rawTab], rawTab] : [rawTab, null]
-  }
-
-  const [_section, _sub] = resolveTab(tab)
-  const activeSection = _section
-  const activeSub     = _sub ?? subTab[_section] ?? null
-
-  const hasIfrAlert = maintenanceAlerts.length > 0 || Object.values(weather).some(w => w.status === 'IFR')
-
-  // ── Helper sous-nav ───────────────────────────────────────
-  const SubNav = ({ items }) => (
-    <div style={{ display:'flex', gap:3, padding:'4px', backgroundColor:'rgba(15,39,69,0.8)', borderRadius:12, border:'1px solid #1E3A5F' }}>
-      {items.map(t => (
-        <button key={t.id} onClick={() => setSubTabFor(activeSection, t.id)} style={{
-          padding:'7px 18px', borderRadius:9, fontSize:12, fontWeight:700,
-          border:'none', cursor:'pointer', transition:'all 0.15s',
-          backgroundColor: activeSub===t.id ? '#F0B429' : 'transparent',
-          color:           activeSub===t.id ? '#0B1F3A' : '#5B8DB8',
-          boxShadow:       activeSub===t.id ? '0 2px 8px rgba(240,180,41,0.3)' : 'none',
-        }}>{t.label}</button>
-      ))}
-    </div>
-  )
-
-  const SectionHeader = ({ title, subItems }) => (
-    <div style={{ marginBottom:24 }}>
-      <div style={{ display:'flex', alignItems:'flex-end', justifyContent:'space-between', flexWrap:'wrap', gap:12 }}>
-        <div>
-          <p style={{ fontSize:10, fontWeight:700, letterSpacing:'0.15em', textTransform:'uppercase', color:'#2D5580', margin:'0 0 4px' }}>
-            SBH Commuter
-          </p>
-          <h1 style={{ fontSize:22, fontWeight:900, color:'#F1F5F9', margin:0, letterSpacing:'-0.02em' }}>{title}</h1>
-        </div>
-        {subItems && <SubNav items={subItems}/>}
-      </div>
-      <div style={{ height:1, backgroundColor:'#1E3A5F', marginTop:16 }}/>
-    </div>
-  )
-
+  // ── RENDER ─────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen text-white" style={{ backgroundColor:'#0B1F3A', fontFamily:"'Segoe UI',system-ui,sans-serif" }}>
+    <div style={{ display:'flex', height:'100vh', backgroundColor:C.bg, color:C.text, fontFamily:"'JetBrains Mono','Cascadia Code','Consolas','Courier New',monospace" }}>
 
       <style>{`
-        @keyframes navPulse { 0%,100%{opacity:1;transform:scale(1);} 50%{opacity:0.4;transform:scale(1.6);} }
-        @keyframes dropIn   { from{opacity:0;transform:translateY(-6px) scale(0.97);} to{opacity:1;transform:translateY(0) scale(1);} }
-        .nav-scroll::-webkit-scrollbar { display:none; }
+        * { box-sizing: border-box; }
+        ::-webkit-scrollbar { width:4px; height:4px; }
+        ::-webkit-scrollbar-track { background: ${C.bg}; }
+        ::-webkit-scrollbar-thumb { background: ${C.borderHi}; border-radius:2px; }
+        ::-webkit-scrollbar-thumb:hover { background: ${C.textFaint}; }
+        @keyframes ripple { 0%{transform:scale(1);opacity:0.4} 100%{transform:scale(2.2);opacity:0} }
+        @keyframes blink  { 0%,100%{opacity:1} 50%{opacity:0.5} }
+        select, input, button, textarea { font-family: inherit; }
+        select option { background-color: ${C.bgPanel}; color: ${C.text}; }
+
+        /* ── RESPONSIVE ─────────────────────────────────── */
+
+        /* Tablette (768–1023px) : sidebar icônes seulement */
+        @media (max-width: 1023px) {
+          .sidebar-full { width: 52px !important; }
+          .sidebar-label, .sidebar-sub, .sidebar-user-detail,
+          .sidebar-chevron, .sidebar-logout { display: none !important; }
+          .sidebar-nav-btn { padding: 10px 0 !important; justify-content: center !important; }
+          .sidebar-logo-text { display: none !important; }
+          .sidebar-collapse-btn { display: none !important; }
+          .dashboard-grid { grid-template-columns: 1fr 1fr !important; }
+          .dashboard-right-col { display: none !important; }
+          .kpi-strip { grid-template-columns: repeat(2,1fr) !important; }
+        }
+
+        /* Mobile (<768px) : bottom nav, pas de sidebar */
+        @media (max-width: 767px) {
+          .sidebar-full { display: none !important; }
+          .mobile-bottom-nav { display: flex !important; }
+          .main-scroll { padding-bottom: 56px !important; }
+          .topbar-clock-sub { display: none !important; }
+          .topbar-aoc { display: none !important; }
+          .kpi-strip { grid-template-columns: repeat(2,1fr) !important; }
+          .dashboard-grid {
+            grid-template-columns: 1fr !important;
+            grid-template-rows: auto !important;
+          }
+          .dashboard-grid > * {
+            grid-column: 1 !important;
+            grid-row: auto !important;
+          }
+          .dashboard-right-col { display: none !important; }
+          .dcs-layout { grid-template-columns: 1fr !important; }
+          .dcs-flight-list { max-height: 220px !important; }
+          .section-header-subs { flex-wrap: wrap !important; }
+          .flight-row-aircraft { display: none !important; }
+          .weather-pill-details { display: none !important; }
+        }
       `}</style>
 
-      {/* Modales */}
-      {flightModal && (
-        <FlightModal
-          flight={flightModal?.id ? flightModal : null}
-          fleet={fleet}
-          onClose={() => setFlightModal(null)}
-          onSaved={() => setFlightModal(null)}
+      {/* Sidebar */}
+      <Sidebar
+        activeSection={activeSection}
+        activeSub={activeSub}
+        onNav={setMainTab}
+        onSubNav={setSubTabFor}
+        hasAlert={hasAlert}
+        user={user}
+        role={role}
+        onProfile={() => setProfileOpen(true)}
+        onLogout={logout}
+      />
+
+      {/* Contenu principal */}
+      <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+
+        {/* Topbar */}
+        <Topbar
+          time={time}
+          section={activeSection}
+          hasAlert={hasAlert}
+          onAlerts={() => setMainTab('alerts')}
         />
-      )}
-      {aircraftModal && (
-        <AircraftModal
-          aircraft={aircraftModal === 'new' ? null : aircraftModal}
-          onClose={() => setAircraftModal(null)}
-          onSaved={() => setAircraftModal(null)}
-        />
-      )}
 
-      {/* ══ HEADER ══ */}
-      <header className="sticky top-0 z-40 border-b" style={{ backgroundColor:'#071729', borderColor:'#1E3A5F' }}>
-        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+        {/* Modales */}
+        {(creationModal || (flightModal && !flightModal.id)) && (
+          <FlightCreationModal
+            onClose={() => { setCreationModal(false); setFlightModal(null) }}
+            onSave={handleSaveFlight}
+            flights={flights} fleet={fleet} aircraft_fleet={fsFleet}
+            rules={{ min_turnaround_minutes:20, buffer_minutes:5, max_daily_cycles:8, max_crew_duty_minutes:720 }}
+            user={user} initialData={newFlightInitData}
+          />
+        )}
+        {flightModal?.id && (
+          <FlightModal flight={flightModal} fleet={fleet} onClose={()=>setFlightModal(null)} onSaved={()=>setFlightModal(null)}/>
+        )}
+        {aircraftModal && (
+          <AircraftModal aircraft={aircraftModal==='new'?null:aircraftModal} onClose={()=>setAircraftModal(null)} onSaved={()=>setAircraftModal(null)}/>
+        )}
 
-          {/* Logo */}
-          <div className="flex items-center gap-3 shrink-0">
-            <img src="/logo-sbh.png" alt="SBH" className="h-9 w-auto" onError={e => e.target.style.display='none'}/>
-            <div>
-              <div className="font-black text-white tracking-wide text-base">OpsAir</div>
-              <div style={{ color:'#F0B429', fontSize:9, letterSpacing:3, textTransform:'uppercase' }}>SOFTWARE</div>
-            </div>
-          </div>
-
-          {/* Horloge */}
-          <div className="hidden sm:block text-center">
-            <div className="font-mono text-xl font-black" style={{ color:'#F0B429' }}>{fmtClock(time)}</div>
-            <div className="text-xs capitalize" style={{ color:'#5B8DB8' }}>{fmtDate(time)}</div>
-            <div style={{ fontSize:9, fontWeight:700, letterSpacing:'0.1em', color:'#2D5580', marginTop:1, textTransform:'uppercase' }}>AST · UTC-4</div>
-          </div>
-
-          {/* Zone utilisateur */}
-          <div className="flex items-center gap-3 shrink-0">
-
-            {/* Cloche alertes */}
-            <button onClick={() => setMainTab('alerts')} style={{
-              position:'relative', width:36, height:36, borderRadius:'50%',
-              border:`1px solid ${hasIfrAlert ? 'rgba(239,68,68,0.5)' : '#1E3A5F'}`,
-              backgroundColor: hasIfrAlert ? 'rgba(239,68,68,0.08)' : 'transparent',
-              cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center',
-            }}>
-              <span style={{ fontSize:15 }}>🔔</span>
-              {hasIfrAlert && (
-                <span style={{
-                  position:'absolute', top:5, right:5, width:7, height:7, borderRadius:'50%',
-                  backgroundColor:'#EF4444', boxShadow:'0 0 6px #EF4444',
-                  animation:'navPulse 1.8s ease-in-out infinite',
-                }}/>
-              )}
-            </button>
-
-            {/* Avatar + dropdown */}
-            <div style={{ position:'relative' }} ref={userMenuRef}>
-              <button onClick={() => setUserMenuOpen(o => !o)} style={{
-                display:'flex', alignItems:'center', gap:9, padding:'5px',
-                borderRadius:40,
-                border:`1px solid ${userMenuOpen ? '#F0B429' : '#1E3A5F'}`,
-                backgroundColor: userMenuOpen ? 'rgba(240,180,41,0.06)' : 'transparent',
-                cursor:'pointer', transition:'all 0.15s',
-              }}>
-                <div style={{
-                  width:32, height:32, borderRadius:'50%',
-                  background:'linear-gradient(135deg,#1E3A5F 0%,#2D5580 100%)',
-                  border:'2px solid #F0B429',
-                  display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0,
-                }}>
-                  <span style={{ fontSize:13, fontWeight:900, color:'#F0B429', fontFamily:'monospace' }}>
-                    {(user?.email?.[0] || 'U').toUpperCase()}
-                  </span>
-                </div>
-                <span className="hidden sm:block" style={{ fontSize:9, fontWeight:800, color:'#F0B429', letterSpacing:'0.12em', textTransform:'uppercase', paddingRight:4 }}>
-                  {role || 'USER'}
-                </span>
-                <span style={{ fontSize:9, color:'#2D5580', paddingRight:6, transform: userMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition:'transform 0.2s' }}>▼</span>
-              </button>
-
-              {userMenuOpen && (
-                <>
-                  <div style={{ position:'fixed', inset:0, zIndex:98 }} onClick={() => setUserMenuOpen(false)}/>
-                  <div style={{
-                    position:'absolute', top:'calc(100% + 8px)', right:0, zIndex:99, width:220,
-                    backgroundColor:'#0A1E36', border:'1px solid #1E3A5F', borderRadius:14,
-                    boxShadow:'0 16px 48px rgba(0,0,0,0.5)', overflow:'hidden', animation:'dropIn 0.15s ease-out',
+        {/* Alerte barre maintenance */}
+        {maintenanceAlerts.length > 0 && !['alerts','dcs'].includes(activeSection) && (
+          <div style={{
+            display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8,
+            padding:'7px 20px', backgroundColor:'rgba(224,80,80,0.06)', borderBottom:`1px solid rgba(224,80,80,0.2)`,
+            flexShrink:0,
+          }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+              <Dot color={C.red} pulse/>
+              <span style={{ fontSize:10, fontWeight:700, color:C.red, letterSpacing:'0.06em' }}>
+                MAINTENANCE — {maintenanceAlerts.length} appareil{maintenanceAlerts.length>1?'s':''}
+              </span>
+              {maintenanceAlerts.map(a => {
+                const ep = getPotentialPercent(a.engine_hours,   a.engine_limit)
+                const ap = getPotentialPercent(a.airframe_hours, a.airframe_limit)
+                return (
+                  <button key={a.id||a.registration} onClick={()=>setAircraftModal(a)} style={{
+                    display:'flex', alignItems:'center', gap:5, padding:'2px 8px',
+                    border:`1px solid rgba(224,80,80,0.3)`, borderRadius:2,
+                    background:'transparent', cursor:'pointer',
                   }}>
-                    <div style={{ padding:'14px 16px 12px', borderBottom:'1px solid #1E3A5F' }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                        <div style={{
-                          width:38, height:38, borderRadius:'50%',
-                          background:'linear-gradient(135deg,#1E3A5F 0%,#2D5580 100%)',
-                          border:'2px solid #F0B429',
-                          display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0,
-                        }}>
-                          <span style={{ fontSize:15, fontWeight:900, color:'#F0B429', fontFamily:'monospace' }}>
-                            {(user?.email?.[0] || 'U').toUpperCase()}
-                          </span>
-                        </div>
-                        <div style={{ minWidth:0 }}>
-                          <div style={{ fontSize:12, fontWeight:700, color:'#F1F5F9', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                            {user?.email || 'Utilisateur'}
-                          </div>
-                          <div style={{ fontSize:9, fontWeight:800, color:'#F0B429', letterSpacing:'0.12em', textTransform:'uppercase', marginTop:2 }}>
-                            {role || 'USER'}
-                          </div>
-                        </div>
+                    <span style={{ fontFamily:'monospace', fontSize:10, fontWeight:800, color:C.text }}>{a.registration}</span>
+                    {a.status==='maintenance' && <Tag color={C.red}>MAINT</Tag>}
+                    {ep<=20 && <Tag color={C.amber}>M {ep}%</Tag>}
+                    {ap<=20 && <Tag color={C.amber}>C {ap}%</Tag>}
+                  </button>
+                )
+              })}
+            </div>
+            <button onClick={()=>setMainTab('alerts')} style={{
+              fontSize:10, color:C.red, background:'none',
+              border:`1px solid rgba(224,80,80,0.3)`, padding:'3px 10px', cursor:'pointer', letterSpacing:'0.06em',
+            }}>VOIR LES ALERTES →</button>
+          </div>
+        )}
+
+        {/* Zone scrollable */}
+        <div className="main-scroll" style={{ flex:1, overflow:'auto', display:'flex', flexDirection:'column' }}>
+
+          {/* ── DASHBOARD ── */}
+          {activeSection === 'dashboard' && (
+            <div style={{ display:'flex', flexDirection:'column', height:'100%', overflow:'hidden' }}>
+              <KPIStrip kpis={kpis} flights={flights}/>
+              <div style={{ flex:1, overflow:'hidden' }}>
+                <DashboardHome
+                  kpis={kpis} flights={flights} fleet={fleet} weather={weather}
+                  onFlightClick={handleFlightClick}
+                  onAircraftClick={handleAircraftClick}
+                  onSubNav={setSubTabFor}
+                  fetchWeather={fetchWeather}
+                  weatherLoading={weatherLoading}
+                  onCreateFlight={handleCreateFlight}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* ── PLANNING ── */}
+          {activeSection === 'planning' && (
+            <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
+              <SectionHeader
+                title="PLANNING"
+                breadcrumb="OPSAIR / PLANNING"
+                section="planning"
+                subItems={[{id:'gantt',label:'GANTT'},{id:'flights',label:'VOLS'},{id:'crew',label:'ÉQUIPAGE'}]}
+                activeSub={activeSub}
+                onSubNav={setSubTabFor}
+              />
+              <div style={{ flex:1, overflow:'auto', padding:20 }}>
+                {activeSub === 'gantt' && (
+                  <GanttEnhanced
+                    flights={flights} fleet={fleet} user={user}
+                    onFlightClick={handleFlightClick}
+                    onCreateFlight={handleCreateFlight}
+                  />
+                )}
+                {activeSub === 'flights' && (
+                  <FlightsPage flights={flights} fleet={fleet} user={user} onCreateFlight={()=>setFlightModal({})}/>
+                )}
+                {activeSub === 'crew' && <CrewPage flights={flights} user={user}/>}
+              </div>
+            </div>
+          )}
+
+          {/* ── FLOTTE ── */}
+          {activeSection === 'fleet' && (
+            <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
+              <SectionHeader
+                title="FLOTTE"
+                breadcrumb="OPSAIR / FLOTTE"
+                section="fleet"
+                subItems={[{id:'aircraft',label:'APPAREILS'},{id:'maintenance',label:'MAINTENANCE'}]}
+                activeSub={activeSub}
+                onSubNav={setSubTabFor}
+              />
+              <div style={{ flex:1, overflow:'auto', padding:20 }}>
+                {activeSub === 'aircraft'    && <FleetPage fleet={fleet} flights={flights} user={user}/>}
+                {activeSub === 'maintenance' && <MaintenancePage fleet={fleet} flights={flights} user={user}/>}
+              </div>
+            </div>
+          )}
+
+          {/* ── OPÉRATIONS ── */}
+          {activeSection === 'operations' && (
+            <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
+              <SectionHeader
+                title="OPÉRATIONS"
+                breadcrumb="OPSAIR / OPÉRATIONS"
+                section="operations"
+                subItems={[{id:'livemap',label:'LIVE MAP'},{id:'weather',label:'MÉTÉO'}]}
+                activeSub={activeSub}
+                onSubNav={setSubTabFor}
+              />
+              <div style={{ flex:1, overflow:'auto' }}>
+                {activeSub === 'livemap' && (
+                  <LiveMap flights={flights} fleet={fleet} user={user} fullscreen={false} onToggleFullscreen={()=>setLiveMapFullscreen(true)}/>
+                )}
+                {activeSub === 'weather' && (
+                  <div style={{ padding:20, display:'flex', flexDirection:'column', gap:16 }}>
+                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+                      <span style={{ fontSize:10, color:C.textDim }}>{AVWX_KEY?'Données AVWX · Actualisation toutes les 10 min':'Données de démonstration'}</span>
+                      <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                        {!AVWX_KEY && <Tag color={C.goldDim}>DÉMO</Tag>}
+                        <button onClick={fetchWeather} disabled={weatherLoading||!AVWX_KEY} style={{
+                          padding:'5px 12px', border:`1px solid ${C.border}`, borderRadius:3,
+                          background:'none', color:C.textDim, fontSize:10, cursor:'pointer',
+                        }}>{weatherLoading?'Chargement...':'Actualiser'}</button>
                       </div>
                     </div>
-
-                    <div style={{ padding:'6px 0' }}>
-                      {[
-                        { icon:'👤', label:'Mon profil',  sub:'Parametres & photo',       action:() => { setUserMenuOpen(false); setProfileOpen(true) } },
-                        { icon:'🛂', label:'Ops Sol DCS', sub:'Departure Control System', action:() => { setMainTab('dcs'); setUserMenuOpen(false) } },
-                        { icon:'🔔', label:'Alertes',     sub: hasIfrAlert ? 'Alertes actives' : 'Tout est nominal', subColor: hasIfrAlert ? '#F87171' : '#475569', action:() => { setMainTab('alerts'); setUserMenuOpen(false) } },
-                      ].map((item, i) => (
-                        <button key={i} onClick={item.action} style={{
-                          width:'100%', display:'flex', alignItems:'center', gap:11,
-                          padding:'9px 16px', border:'none', cursor:'pointer',
-                          backgroundColor:'transparent', textAlign:'left', transition:'background 0.1s',
-                        }}
-                          onMouseEnter={e => e.currentTarget.style.backgroundColor='rgba(30,58,95,0.4)'}
-                          onMouseLeave={e => e.currentTarget.style.backgroundColor='transparent'}
-                        >
-                          <span style={{ fontSize:15, width:20, textAlign:'center', flexShrink:0 }}>{item.icon}</span>
-                          <div>
-                            <div style={{ fontSize:12, fontWeight:600, color:'#F1F5F9' }}>{item.label}</div>
-                            <div style={{ fontSize:10, color: item.subColor || '#475569', marginTop:1 }}>{item.sub}</div>
-                          </div>
-                        </button>
-                      ))}
-
-                      <div style={{ height:1, backgroundColor:'#1E3A5F', margin:'4px 0' }}/>
-
-                      <button onClick={() => { setUserMenuOpen(false); logout() }} style={{
-                        width:'100%', display:'flex', alignItems:'center', gap:11,
-                        padding:'9px 16px', border:'none', cursor:'pointer',
-                        backgroundColor:'transparent', textAlign:'left', transition:'background 0.1s',
-                      }}
-                        onMouseEnter={e => e.currentTarget.style.backgroundColor='rgba(239,68,68,0.08)'}
-                        onMouseLeave={e => e.currentTarget.style.backgroundColor='transparent'}
-                      >
-                        <span style={{ fontSize:15, width:20, textAlign:'center', flexShrink:0, color:'#EF4444' }}>↩</span>
-                        <div>
-                          <div style={{ fontSize:12, fontWeight:600, color:'#F87171' }}>Deconnexion</div>
-                          <div style={{ fontSize:10, color:'#475569', marginTop:1 }}>Fermer la session</div>
-                        </div>
-                      </button>
+                    <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:1, backgroundColor:C.border }}>
+                      {Object.values(weather).map(w => <WeatherCard key={w.icao} w={w}/>)}
                     </div>
+                    <WeatherForecast flights={flights} weather={weather}/>
                   </div>
-                </>
-              )}
+                )}
+              </div>
             </div>
-          </div>
-        </div>
-      </header>
+          )}
 
-      {/* ══ NAV PRINCIPALE ══ */}
-      <nav style={{ backgroundColor:'#071729', borderBottom:'1px solid #1E3A5F', position:'sticky', top:57, zIndex:30 }}>
-        <div className="nav-scroll" style={{
-          maxWidth:1280, margin:'0 auto',
-          display:'flex', alignItems:'stretch',
-          overflowX:'auto', WebkitOverflowScrolling:'touch',
-          scrollbarWidth:'none', msOverflowStyle:'none',
+          {/* ── DCS ── */}
+          {activeSection === 'dcs' && (
+            <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
+              <SectionHeader title="OPS SOL — DCS" breadcrumb="OPSAIR / DEPARTURE CONTROL"/>
+              <div style={{ flex:1, overflow:'auto' }}>
+                <DCSSectionEmbed flights={flights}/>
+              </div>
+            </div>
+          )}
+
+          {/* ── ALERTES ── */}
+          {activeSection === 'alerts' && (
+            <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
+              <SectionHeader title="ALERTES" breadcrumb="OPSAIR / ALERTES"/>
+              <div style={{ flex:1, overflow:'auto', padding:20 }}>
+                <SmartAlertsPanel userId={user?.uid}/>
+              </div>
+            </div>
+          )}
+
+        </div>
+
+        {/* Footer */}
+        <div style={{
+          flexShrink:0, borderTop:`1px solid ${C.border}`, padding:'6px 20px',
+          display:'flex', alignItems:'center', justifyContent:'space-between',
+          backgroundColor:C.bgPanel,
         }}>
-          {NAV.map(item => {
-            const isActive = activeSection === item.id
-            const alertDot = item.id === 'alerts' && hasIfrAlert && !isActive
+          <span style={{ fontSize:8, fontWeight:700, letterSpacing:'0.15em', color:C.textFaint }}>
+            OPSAIR v3.0 · DGAC/OSAC · EASA PART-145
+          </span>
+          <span style={{ fontSize:8, color:C.textFaint }}>
+            {fmtClock(time)} AST
+          </span>
+        </div>
+      </div>
+
+      {/* Live Map plein écran */}
+      {liveMapFullscreen && (
+        <div style={{ position:'fixed', inset:0, zIndex:500, backgroundColor:'#020408', display:'flex', flexDirection:'column' }}>
+          <LiveMap flights={flights} fleet={fleet} user={user} fullscreen={true} onToggleFullscreen={()=>setLiveMapFullscreen(false)}/>
+        </div>
+      )}
+
+      {/* ── BOTTOM NAV MOBILE ── */}
+      <nav className="mobile-bottom-nav" style={{
+        display:'none',
+        position:'fixed', bottom:0, left:0, right:0, zIndex:100,
+        backgroundColor:C.bgPanel, borderTop:`1px solid ${C.borderHi}`,
+        paddingBottom:'env(safe-area-inset-bottom, 0px)',
+      }}>
+        <div style={{ display:'flex', height:56 }}>
+          {[
+            { id:'dcs',        icon:'🛂', label:'Ops Sol'  },
+            { id:'planning',   icon:'▦',  label:'Planning'  },
+            { id:'fleet',      icon:'✈',  label:'Flotte'    },
+            { id:'operations', icon:'◉',  label:'Météo'     },
+            { id:'alerts',     icon:'◬',  label:'Alertes'   },
+          ].map(item => {
+            // Pour "Météo" on pointe vers la sous-section weather
+            const isActive = item.id === 'operations'
+              ? activeSection === 'operations'
+              : activeSection === item.id
+            const alertDot = item.id === 'alerts' && hasAlert
+            const handleTap = () => {
+              if (item.id === 'operations') setSubTabFor('operations', 'weather')
+              else setMainTab(item.id)
+            }
             return (
-              <button key={item.id} onClick={() => setMainTab(item.id)} style={{
-                display:'flex', alignItems:'center', gap:6,
-                padding:'0 16px', height:46,
-                fontSize:12, fontWeight:700, letterSpacing:'0.04em',
-                whiteSpace:'nowrap', flexShrink:0,
-                border:'none', cursor:'pointer', position:'relative',
-                backgroundColor:'transparent',
-                color:        isActive ? '#F0B429' : '#5B8DB8',
-                borderBottom:`2px solid ${isActive ? '#F0B429' : 'transparent'}`,
-                transition:'color 0.15s, border-color 0.15s',
+              <button key={item.id} onClick={handleTap} style={{
+                flex:1, display:'flex', flexDirection:'column',
+                alignItems:'center', justifyContent:'center', gap:3,
+                border:'none', background: isActive ? 'rgba(212,168,67,0.07)' : 'none',
+                cursor:'pointer', position:'relative',
+                borderTop:`2px solid ${isActive ? C.gold : 'transparent'}`,
+                transition:'all 0.15s',
               }}>
-                <span style={{ fontSize:14 }}>{item.icon}</span>
-                {item.label}
+                <span style={{ fontSize:17, lineHeight:1 }}>{item.icon}</span>
+                <span style={{
+                  fontSize:9, fontWeight:700, letterSpacing:'0.05em',
+                  color: isActive ? C.gold : C.textDim,
+                }}>
+                  {item.label}
+                </span>
                 {alertDot && (
                   <span style={{
-                    position:'absolute', top:9, right:6, width:7, height:7, borderRadius:'50%',
-                    backgroundColor:'#EF4444', boxShadow:'0 0 7px #EF4444',
-                    animation:'navPulse 1.8s ease-in-out infinite',
+                    position:'absolute', top:6, right:'calc(50% - 14px)',
+                    width:7, height:7, borderRadius:'50%',
+                    backgroundColor:C.red, boxShadow:`0 0 6px ${C.red}`,
                   }}/>
                 )}
               </button>
             )
           })}
-
-          {/* Spacer + Audit */}
-          <div style={{ flex:1, minWidth:8 }}/>
-          <button onClick={() => setMainTab('audit')} style={{
-            display:'flex', alignItems:'center', gap:6,
-            padding:'0 16px', height:46, fontSize:11, fontWeight:600,
-            border:'none', cursor:'pointer', backgroundColor:'transparent',
-            color:        activeSection==='audit' ? '#F0B429' : '#2D5580',
-            borderBottom:`2px solid ${activeSection==='audit' ? '#F0B429' : 'transparent'}`,
-            whiteSpace:'nowrap', flexShrink:0, letterSpacing:'0.04em',
-          }}>
-            🔍 Audit
-          </button>
         </div>
       </nav>
 
-      <main className="max-w-7xl mx-auto px-4 py-6 space-y-5">
-
-        {/* Bandeau alertes maintenance — masqué sur Ops Sol */}
-        {maintenanceAlerts.length > 0 && activeSection !== 'alerts' && activeSection !== 'dcs' && (
-          <div className="rounded-xl border p-4" style={{ backgroundColor:'rgba(127,29,29,0.12)', borderColor:'rgba(127,29,29,0.6)' }}>
-            <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
-              <div className="flex items-center gap-2">
-                <span>⚠️</span>
-                <span className="font-bold text-sm" style={{ color:'#FCA5A5' }}>
-                  Alertes maintenance — {maintenanceAlerts.length} appareil{maintenanceAlerts.length > 1 ? 's' : ''}
-                </span>
-              </div>
-              <button onClick={() => setMainTab('alerts')} style={{
-                fontSize:10, color:'#F87171', fontWeight:700,
-                padding:'3px 10px', borderRadius:6,
-                border:'1px solid rgba(127,29,29,0.5)',
-                backgroundColor:'rgba(127,29,29,0.15)', cursor:'pointer',
-              }}>Voir toutes les alertes →</button>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {maintenanceAlerts.map(a => {
-                const ep = getPotentialPercent(a.engine_hours,   a.engine_limit)
-                const ap = getPotentialPercent(a.airframe_hours, a.airframe_limit)
-                return (
-                  <button key={a.id||a.registration} onClick={() => setAircraftModal(a)}
-                    className="flex items-center gap-2 rounded-lg px-3 py-1.5"
-                    style={{ backgroundColor:'rgba(0,0,0,0.3)', border:'1px solid rgba(127,29,29,0.5)' }}>
-                    <span className="font-mono font-black text-xs text-white">{a.registration}</span>
-                    {a.status==='maintenance' && <span className="text-xs px-1.5 rounded" style={{ backgroundColor:'#7F1D1D', color:'#FCA5A5' }}>MAINT.</span>}
-                    {ep<=20 && <span className="text-xs px-1.5 rounded" style={{ backgroundColor:'#78350F', color:'#FCD34D' }}>Moteur {ep}%</span>}
-                    {ap<=20 && <span className="text-xs px-1.5 rounded" style={{ backgroundColor:'#78350F', color:'#FCD34D' }}>Cellule {ap}%</span>}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* ═══════════════════════════════════
-            1. DASHBOARD
-        ═══════════════════════════════════ */}
-        {activeSection === 'dashboard' && (
-          <div className="space-y-5">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <KPICard label="Vols du jour" value={kpis.total}          color="#FFFFFF" icon="✈"  sub={`${kpis.completed} atterris`}/>
-              <KPICard label="En vol"       value={kpis.inFlight}       color="#F0B429" icon="🛫" sub="temps reel"/>
-              <KPICard label="Passagers"    value={kpis.totalPax}       color="#7DD3FC" icon="👥" sub="aujourd'hui"/>
-              <KPICard label="Remplissage"  value={`${kpis.fillRate}%`} color="#4ADE80" icon="📊" sub={`${kpis.cancelled||0} annule(s)`}/>
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <h2 style={{ color:'#5B8DB8', fontSize:10, fontWeight:700, letterSpacing:3, textTransform:'uppercase' }}>Meteo aerodromes</h2>
-                {!AVWX_KEY && <span style={{ color:'#F0B429', fontSize:9, padding:'2px 8px', border:'1px solid rgba(240,180,41,0.4)', borderRadius:4 }}>DEMO</span>}
-              </div>
-              <div className="grid sm:grid-cols-3 gap-3">
-                {Object.values(weather).map(w => <WeatherCard key={w.icao} w={w}/>)}
-              </div>
-            </div>
-
-            <div className="grid sm:grid-cols-2 gap-4">
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <h2 style={{ color:'#5B8DB8', fontSize:10, fontWeight:700, letterSpacing:3, textTransform:'uppercase' }}>Prochains vols</h2>
-                  <button onClick={() => setSubTabFor('planning','flights')} style={{ color:'#F0B429', fontSize:11 }}>Voir tout →</button>
-                </div>
-                <div className="space-y-2">
-                  {upcomingFlights.length === 0 ? (
-                    <div className="rounded-xl border p-4 text-center text-sm" style={{ backgroundColor:'#112D52', borderColor:'#1E3A5F', color:'#2D5580' }}>
-                      Aucun vol programme
-                    </div>
-                  ) : upcomingFlights.map(f => (
-                    <button key={f.id} onClick={() => setFlightModal(f)}
-                      className="w-full rounded-xl border p-3 text-left"
-                      style={{ backgroundColor:'#112D52', borderColor:'#1E3A5F' }}>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono font-black text-xs" style={{ color:'#F0B429' }}>{f.flight_number}</span>
-                          <span className="text-xs font-bold text-white">
-                            {AIRPORTS_FULL[f.origin]?.short} → {AIRPORTS_FULL[f.destination]?.short}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs" style={{ color:'#5B8DB8' }}>{fmtTime(toDate(f.departure_time))}</span>
-                          <span className="text-xs" style={{ color:'#5B8DB8' }}>{f.pax_count}/{f.max_pax}</span>
-                        </div>
-                      </div>
-                      <div className="text-xs mt-1" style={{ color:'#2D5580' }}>{f.aircraft} · {f.pilot || 'Pilote N/A'}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <h2 style={{ color:'#5B8DB8', fontSize:10, fontWeight:700, letterSpacing:3, textTransform:'uppercase' }}>Etat flotte</h2>
-                  <button onClick={() => setSubTabFor('fleet','aircraft')} style={{ color:'#F0B429', fontSize:11 }}>Voir tout →</button>
-                </div>
-                <div className="space-y-2">
-                  {fleet.map(a => (
-                    <button key={a.id||a.registration} onClick={() => setAircraftModal(a)}
-                      className="w-full rounded-xl border p-3 text-left"
-                      style={{ backgroundColor:'#112D52', borderColor: a.status==='maintenance' ? 'rgba(127,29,29,0.6)' : '#1E3A5F' }}>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <StatusDot status={a.status}/>
-                          <span className="font-mono font-bold text-xs text-white">{a.registration}</span>
-                          <span style={{ color:'#5B8DB8', fontSize:10 }}>{STATUS_LABEL[a.status]}</span>
-                        </div>
-                        {getPotentialPercent(a.engine_hours, a.engine_limit) <= 20 && (
-                          <span className="text-xs px-1.5 rounded" style={{ backgroundColor:'#78350F', color:'#FCD34D' }}>
-                            M {getPotentialPercent(a.engine_hours, a.engine_limit)}%
-                          </span>
-                        )}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ═══════════════════════════════════
-            2. PLANNING
-        ═══════════════════════════════════ */}
-        {activeSection === 'planning' && (
-          <div>
-            <SectionHeader
-              title="Planning"
-              subItems={[
-                { id:'gantt',   label:'▦ Gantt'    },
-                { id:'flights', label:'≡ Vols'      },
-                { id:'crew',    label:'Equipage'    },
-              ]}
-            />
-            {activeSub === 'gantt' && (
-              <div className="space-y-4">
-                <div className="text-xs capitalize" style={{ color:'#2D5580' }}>{fmtDate(time)}</div>
-                <GanttEnhanced
-                  flights={flights} fleet={fleet} user={user}
-                  onFlightClick={handleFlightClick}
-                  onCreateFlight={handleCreateFlight}
-                />
-              </div>
-            )}
-            {activeSub === 'flights' && (
-              <FlightsPage flights={flights} fleet={fleet} user={user} onCreateFlight={() => setFlightModal({})}/>
-            )}
-            {activeSub === 'crew' && (
-              <CrewPage flights={flights} user={user}/>
-            )}
-          </div>
-        )}
-
-        {/* ═══════════════════════════════════
-            3. FLOTTE
-        ═══════════════════════════════════ */}
-        {activeSection === 'fleet' && (
-          <div>
-            <SectionHeader
-              title="Flotte"
-              subItems={[
-                { id:'aircraft',    label:'✈ Appareils'   },
-                { id:'maintenance', label:'🔧 Maintenance' },
-              ]}
-            />
-            {activeSub === 'aircraft'    && <FleetPage       fleet={fleet} flights={flights} user={user}/>}
-            {activeSub === 'maintenance' && <MaintenancePage fleet={fleet} flights={flights} user={user}/>}
-          </div>
-        )}
-
-        {/* ═══════════════════════════════════
-            4. OPERATIONS
-        ═══════════════════════════════════ */}
-        {activeSection === 'operations' && (
-          <div>
-            <SectionHeader
-              title="Operations"
-              subItems={[
-                { id:'livemap', label:'🗺 Live Map' },
-                { id:'weather', label:'◎ Meteo'    },
-              ]}
-            />
-            {activeSub === 'livemap' && (
-              <LiveMap
-                flights={flights} fleet={fleet} user={user}
-                fullscreen={false}
-                onToggleFullscreen={() => setLiveMapFullscreen(true)}
-              />
-            )}
-            {activeSub === 'weather' && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <div className="text-xs" style={{ color:'#2D5580' }}>
-                    {AVWX_KEY ? 'Donnees AVWX · Actualisation toutes les 10 min' : 'Donnees de demonstration'}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {!AVWX_KEY && <span style={{ color:'#F0B429', fontSize:9, padding:'3px 8px', border:'1px solid rgba(240,180,41,0.4)', borderRadius:4 }}>DEMO</span>}
-                    <button onClick={fetchWeather} disabled={weatherLoading||!AVWX_KEY}
-                      className="text-xs px-3 py-1.5 rounded-lg border disabled:opacity-30"
-                      style={{ borderColor:'#1E3A5F', color:'#5B8DB8' }}>
-                      {weatherLoading ? 'Chargement...' : 'Actualiser'}
-                    </button>
-                  </div>
-                </div>
-                <div className="grid sm:grid-cols-3 gap-4">
-                  {Object.values(weather).map(w => <WeatherCard key={w.icao} w={w}/>)}
-                </div>
-                <div className="rounded-xl border p-4" style={{ backgroundColor:'#112D52', borderColor:'#1E3A5F' }}>
-                  <div className="font-bold text-sm text-white mb-3">Regles VFR — DGAC/OSAC</div>
-                  <div className="space-y-1.5">
-                    {[
-                      { code:'VFR',  color:'#4ADE80', desc:'Visibilite > 5km, plafond > 1000ft — Vol autorise' },
-                      { code:'MVFR', color:'#F0B429', desc:'Visibilite 3-5km ou plafond 500-1000ft — Decision pilote' },
-                      { code:'IFR',  color:'#F87171', desc:'Visibilite < 3km ou plafond < 500ft — Vol non recommande VFR' },
-                    ].map(({ code, color, desc }) => (
-                      <div key={code} className="flex gap-3 items-center">
-                        <span className="font-black w-12 text-sm" style={{ color }}>{code}</span>
-                        <span style={{ color:'#5B8DB8', fontSize:12 }}>{desc}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div style={{ height:1, backgroundColor:'#1E3A5F' }}/>
-                <WeatherForecast flights={flights} weather={weather}/>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ═══════════════════════════════════
-            5. DCS — OPS SOL
-        ═══════════════════════════════════ */}
-        {activeSection === 'dcs' && (
-          <div>
-            <div style={{ marginBottom:24 }}>
-              <div style={{ display:'flex', alignItems:'flex-end', justifyContent:'space-between', flexWrap:'wrap', gap:12 }}>
-                <div>
-                  <p style={{ fontSize:10, fontWeight:700, letterSpacing:'0.15em', textTransform:'uppercase', color:'#2D5580', margin:'0 0 4px' }}>SBH Commuter</p>
-                  <h1 style={{ fontSize:22, fontWeight:900, color:'#F1F5F9', margin:0, letterSpacing:'-0.02em' }}>Ops Sol — DCS</h1>
-                </div>
-                <a href="/dcs" target="_blank" rel="noopener noreferrer" style={{
-                  display:'flex', alignItems:'center', gap:6,
-                  padding:'8px 16px', borderRadius:10,
-                  backgroundColor:'#F0B429', color:'#0B1F3A',
-                  fontSize:12, fontWeight:800, textDecoration:'none', letterSpacing:'0.05em',
-                }}>
-                  🛂 Ouvrir DCS terrain →
-                </a>
-              </div>
-              <div style={{ height:1, backgroundColor:'#1E3A5F', marginTop:16 }}/>
-            </div>
-            <DCSSectionEmbed flights={flights}/>
-          </div>
-        )}
-
-        {/* ═══════════════════════════════════
-            6. ALERTES
-        ═══════════════════════════════════ */}
-        {activeSection === 'alerts' && (
-          <div className="rounded-xl border p-5" style={{ backgroundColor:'#071729', borderColor:'#1E3A5F', minHeight:400 }}>
-            <SmartAlertsPanel userId={user?.uid}/>
-          </div>
-        )}
-
-      </main>
-
       {/* Profil */}
-      {profileOpen && <ProfilePage onClose={() => setProfileOpen(false)}/>}
-
-      {/* Live Map plein écran */}
-      {liveMapFullscreen && (
-        <div style={{ position:'fixed', inset:0, zIndex:500, backgroundColor:'#071118', display:'flex', flexDirection:'column' }}>
-          <LiveMap
-            flights={flights} fleet={fleet} user={user}
-            fullscreen={true}
-            onToggleFullscreen={() => setLiveMapFullscreen(false)}
-          />
-        </div>
-      )}
-
-      <footer className="border-t mt-12 py-4 text-center" style={{ borderColor:'#1E3A5F' }}>
-        <span style={{ color:'#1E3A5F', fontSize:10, letterSpacing:1 }}>
-          SKYBH v3.0 · SBH Commuter · FR.AOC.0033 · DGAC/OSAC · EASA Part-145
-        </span>
-      </footer>
+      {profileOpen && <ProfilePage onClose={()=>setProfileOpen(false)}/>}
     </div>
   )
 }
