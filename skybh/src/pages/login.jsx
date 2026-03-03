@@ -4,15 +4,17 @@ import { useAuth } from '../context/AuthContext'
 
 // ── Domaines officiels autorisés ───────────────────────────────
 const ALLOWED_DOMAINS = [
-  'skybhcommuter.com',
-  'www.skybhcommuter.com',
+  'opsair.netlify.app',
+  'www.opsair.netlify.app',
+  'opsair.com',
+  'www.opsair.com',
   'localhost',
   '127.0.0.1',
 ]
 
 const MAX_ATTEMPTS = 5
-const LOCKOUT_MS   = 5 * 60 * 1000 // 5 minutes
-const STORAGE_KEY  = 'skybh_login_attempts'
+const LOCKOUT_MS   = 5 * 60 * 1000
+const STORAGE_KEY  = 'opsair_login_attempts'
 
 function getCurrentDomain() {
   return window.location.hostname
@@ -120,9 +122,9 @@ export default function Login() {
                style={{ background: '#C8A951' }}>
             <span className="text-3xl">✈</span>
           </div>
-          <h1 className="text-3xl font-bold text-white tracking-widest">SKYBH</h1>
+          <h1 className="text-3xl font-bold text-white tracking-widest">OPSAIR</h1>
           <p className="mt-1" style={{ color: '#C8A951', fontSize: '0.85rem', letterSpacing: '0.1em' }}>
-            ST BARTH COMMUTER — ACCÈS OPÉRATIONNEL
+            ACCÈS OPÉRATIONNEL
           </p>
         </div>
 
@@ -137,7 +139,7 @@ export default function Login() {
             </p>
             <p className="text-xs mt-0.5" style={{ color: domainOk ? '#86efac' : '#fca5a5' }}>
               {domainOk
-                ? `✓ ${currentDomain} — Site officiel SBH Commuter`
+                ? `✓ ${currentDomain} — Site officiel OpsAir`
                 : `⚠ Vous êtes sur "${currentDomain}" — Ne saisissez pas vos identifiants ici.`}
             </p>
           </div>
@@ -150,10 +152,10 @@ export default function Login() {
             <p className="text-red-300 text-sm mb-4">
               Cette page est accessible uniquement depuis le domaine officiel.
             </p>
-            <a href="https://skybhcommuter.com"
+            <a href="https://opsair.netlify.app"
                className="inline-block px-6 py-2 rounded-lg font-semibold text-sm"
                style={{ background: '#C8A951', color: '#0B1F3A' }}>
-              Aller sur skybhcommuter.com →
+              Aller sur opsair.netlify.app →
             </a>
           </div>
         )}
@@ -175,7 +177,7 @@ export default function Login() {
                   disabled={isDisabled}
                   className="w-full rounded-lg px-4 py-3 text-white text-sm focus:outline-none disabled:opacity-40"
                   style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(200,169,81,0.3)' }}
-                  placeholder="prenom.nom@skybhcommuter.com"
+                  placeholder="prenom.nom@opsair.com"
                   autoComplete="username"
                 />
               </div>
@@ -229,9 +231,9 @@ export default function Login() {
             </div>
 
             <div className="mt-6 pt-4 border-t border-white/10 text-center">
-              <p className="text-xs text-gray-600">Accès réservé au personnel autorisé SBH Commuter</p>
+              <p className="text-xs text-gray-600">Accès réservé au personnel autorisé OpsAir</p>
               <p className="text-xs mt-1" style={{ color: 'rgba(200,169,81,0.4)' }}>
-                TFFJ · Saint-Barthélemy · Antilles françaises
+                Plateforme de gestion opérationnelle aérienne
               </p>
             </div>
           </div>

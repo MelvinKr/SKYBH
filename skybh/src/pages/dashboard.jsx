@@ -641,8 +641,8 @@ export default function Dashboard() {
           <div className="flex items-center gap-3 shrink-0">
             <img src="/logo-sbh.png" alt="SBH" className="h-9 w-auto" onError={e => e.target.style.display='none'}/>
             <div>
-              <div className="font-black text-white tracking-wide text-base">SKYBH</div>
-              <div style={{ color:'#F0B429', fontSize:9, letterSpacing:3, textTransform:'uppercase' }}>St Barth Commuter</div>
+              <div className="font-black text-white tracking-wide text-base">OpsAir</div>
+              <div style={{ color:'#F0B429', fontSize:9, letterSpacing:3, textTransform:'uppercase' }}>SOFTWARE</div>
             </div>
           </div>
 
