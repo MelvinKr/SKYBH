@@ -3,6 +3,7 @@ import { AuthProvider, useAuth } from './context/AuthContext'
 import Login from './pages/login'
 import Dashboard from './pages/dashboard'
 import SeedPage from './pages/seed'
+import DCSPage from './pages/DCSPage'
 
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth()
@@ -31,6 +32,13 @@ function AppRoutes() {
           <SeedPage />
         </PrivateRoute>
       } />
+
+      <Route path="/dcs" element={
+        <PrivateRoute>
+          <DCSPage />
+        </PrivateRoute>
+      } />
+
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   )

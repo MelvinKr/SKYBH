@@ -1,0 +1,182 @@
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useAuth } from '../context/AuthContext'
+import {
+  subscribeToFlightBookings, checkInPassenger, boardPassenger,
+  markNoShow, cancelBooking, createBooking,
+} from '../services/bookingService'
+import { getPassenger, findOrCreatePassenger, searchPassengersByName } from '../services/passengerService'
+import { generateManifest, closeManifest, departFlight, subscribeToManifest } from '../services/manifestService'
+
+function normalizeFlightForManifest(flightData) {
+  if (!flightData) return null
+  const resolveDate = (val) => {
+    if (!val) return null
+    if (typeof val?.toDate === 'function') return val.toDate()
+    if (val instanceof Date) return val
+    if (typeof val === 'string' || typeof val === 'number') return new Date(val)
+    return null
+  }
+  return {
+    flightNumber:       flightData.flightNumber  || flightData.flight_number || '',
+    registration:       flightData.registration  || flightData.aircraft      || '',
+    origin:             flightData.origin        || flightData.departure     || '',
+    destination:        flightData.destination   || flightData.arrival       || '',
+    scheduledDeparture: resolveDate(flightData.scheduledDeparture || flightData.departure_time),
+    scheduledArrival:   resolveDate(flightData.scheduledArrival   || flightData.arrival_time),
+    fuelKg:             flightData.fuelKg    || 0,
+    tripFuelKg:         flightData.tripFuelKg || 0,
+  }
+}
+
+export function useDCS(flightId, flightData) {
+  const { user } = useAuth()
+  const [rawBookings,   setRawBookings]   = useState([])
+  const [bookings,      setBookings]      = useState([])
+  const [manifest,      setManifest]      = useState(null)
+  const [loading,       setLoading]       = useState(true)
+  const [error,         setError]         = useState(null)
+  const [searchResults, setSearchResults] = useState([])
+  const [searchLoading, setSearchLoading] = useState(false)
+  const passengerCache = useRef({})
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const safeFlightData = useMemo(() => normalizeFlightForManifest(flightData), [flightId])
+
+  const enrichBookings = useCallback(async (rawList) => {
+    const enriched = await Promise.all(rawList.map(async (booking) => {
+      try {
+        const pid = booking.passengerId
+        if (!pid) return booking
+        if (!passengerCache.current[pid]) {
+          passengerCache.current[pid] = await getPassenger(pid)
+        }
+        const passenger = passengerCache.current[pid]
+        if (!passenger) return booking
+        return {
+          ...booking,
+          lastName:    passenger.lastName       || '',
+          firstName:   passenger.firstName      || '',
+          nationality: passenger.nationality    || '',
+          docType:     passenger.documentType   || '',
+          docNumber:   passenger.documentNumber || '',
+          weight:      passenger.weight         || 84,
+          _passenger:  passenger,
+        }
+      } catch { return booking }
+    }))
+    setBookings(enriched)
+  }, [])
+
+  useEffect(() => {
+    if (!flightId) { setLoading(false); return }
+    setLoading(true)
+    passengerCache.current = {}
+    const unsub = subscribeToFlightBookings(
+      flightId,
+      async (raw) => { setRawBookings(raw); await enrichBookings(raw); setLoading(false) },
+      (err) => { setError(err.message); setLoading(false) }
+    )
+    return () => unsub()
+  }, [flightId])
+
+  useEffect(() => {
+    if (rawBookings.length > 0) enrichBookings(rawBookings)
+  }, [rawBookings])
+
+  useEffect(() => {
+    if (!flightId) return
+    const unsub = subscribeToManifest(flightId, setManifest, (err) => console.warn('[useDCS] manifest:', err.message))
+    return () => unsub()
+  }, [flightId])
+
+  const stats = {
+    total:        bookings.length,
+    confirmed:    bookings.filter(b => b.status === 'confirmed').length,
+    checkedIn:    bookings.filter(b => b.status === 'checked_in').length,
+    boarded:      bookings.filter(b => b.status === 'boarded').length,
+    noShow:       bookings.filter(b => b.status === 'no_show').length,
+    cancelled:    bookings.filter(b => b.status === 'cancelled').length,
+    totalBaggage: bookings.filter(b => ['checked_in','boarded'].includes(b.status)).reduce((s,b) => s+(b.baggageWeight||0),0),
+  }
+
+  const occupiedSeats = bookings
+    .filter(b => b.seatNumber && !['cancelled','no_show'].includes(b.status))
+    .map(b => b.seatNumber)
+
+  const handleCheckIn = useCallback(async (bookingId, { baggageWeight, seatNumber } = {}) => {
+    try {
+      await checkInPassenger(bookingId, user?.uid, { baggageWeight, seatNumber })
+      if (safeFlightData) await generateManifest(flightId, safeFlightData, user?.uid).catch(e => console.warn('[useDCS] manifest auto-gen:', e.message))
+    } catch (err) { setError(err.message); throw err }
+  }, [flightId, safeFlightData, user])
+
+  const handleBoard = useCallback(async (bookingId) => {
+    try { await boardPassenger(bookingId) }
+    catch (err) { setError(err.message); throw err }
+  }, [])
+
+  const handleNoShow = useCallback(async (bookingId) => {
+    try { await markNoShow(bookingId, user?.uid) }
+    catch (err) { setError(err.message); throw err }
+  }, [user])
+
+  const handleCancel = useCallback(async (bookingId, reason = '') => {
+    try { await cancelBooking(bookingId, reason) }
+    catch (err) { setError(err.message); throw err }
+  }, [])
+
+  const handleWalkIn = useCallback(async (passengerData, bookingData = {}) => {
+    try {
+      const { id: passengerId } = await findOrCreatePassenger(passengerData.documentNumber, passengerData)
+      const bookingId = await createBooking({
+        flightId, passengerId,
+        baggageWeight: bookingData.baggageWeight || 0,
+        seatNumber:    bookingData.seatNumber    || null,
+        bookingSource: 'walkin',
+        agentId:       user?.uid,
+      })
+      await checkInPassenger(bookingId, user?.uid, {
+        baggageWeight: bookingData.baggageWeight || 0,
+        seatNumber:    bookingData.seatNumber    || null,
+      })
+      if (passengerId) delete passengerCache.current[passengerId]
+      if (safeFlightData) await generateManifest(flightId, safeFlightData, user?.uid).catch(e => console.warn('[useDCS] manifest post-walkin:', e.message))
+      return bookingId
+    } catch (err) { setError(err.message); throw err }
+  }, [flightId, safeFlightData, user])
+
+  const handleGenerateManifest = useCallback(async () => {
+    if (!safeFlightData) { setError('Données du vol manquantes pour générer le manifeste'); return }
+    try { await generateManifest(flightId, safeFlightData, user?.uid) }
+    catch (err) { setError(err.message) }
+  }, [flightId, safeFlightData, user])
+
+  const handleCloseManifest = useCallback(async () => {
+    try { await closeManifest(flightId, user?.uid) }
+    catch (err) { setError(err.message) }
+  }, [flightId, user])
+
+  const handleDeparture = useCallback(async () => {
+    try { await departFlight(flightId, user?.uid) }
+    catch (err) { setError(err.message) }
+  }, [flightId, user])
+
+  const searchPassengers = useCallback(async (q) => {
+    if (!q || q.length < 2) { setSearchResults([]); return }
+    setSearchLoading(true)
+    try { const results = await searchPassengersByName(q); setSearchResults(results) }
+    catch (err) { console.warn('[useDCS] search:', err.message) }
+    finally { setSearchLoading(false) }
+  }, [])
+
+  const clearSearch = useCallback(() => setSearchResults([]), [])
+  const clearError  = useCallback(() => setError(null), [])
+
+  return {
+    bookings, rawBookings, manifest, stats, occupiedSeats,
+    loading, error, searchResults, searchLoading,
+    handleCheckIn, handleBoard, handleNoShow, handleCancel,
+    handleWalkIn, handleGenerateManifest, handleCloseManifest,
+    handleDeparture, searchPassengers, clearSearch, clearError,
+  }
+}
