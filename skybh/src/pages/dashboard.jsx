@@ -19,6 +19,7 @@ import LiveMap from '../components/live-map/LiveMap'
 import CrewPage from './crew'
 import ProfilePage from './profile'
 import PassengerCheckin from '../components/dcs/PassengerCheckin'
+import CommercialPage from './commercial'
 import WBCalculator from '../components/dcs/WBCalculator'
 import FlightCreationModal from '../components/gantt/flight-creation-modal'
 
@@ -690,6 +691,7 @@ const NAV_ITEMS = [
   { id:'fleet',      icon:'✈',  label:'Flotte',      subs:[{id:'aircraft',label:'Appareils'},{id:'maintenance',label:'Maintenance'}] },
   { id:'operations', icon:'◉',  label:'Opérations',  subs:[{id:'livemap',label:'Live Map'},{id:'weather',label:'Météo'}] },
   { id:'dcs',        icon:'🛂', label:'Ops Sol' },
+  { id:'commercial', icon:'💶', label:'Commercial' },
   { id:'alerts',     icon:'◬',  label:'Alertes' },
 ]
 
@@ -836,7 +838,7 @@ function Sidebar({ activeSection, activeSub, onNav, onSubNav, hasAlert, user, ro
 function Topbar({ time, section, hasAlert, onAlerts }) {
   const sectionLabels = {
     dashboard:'Vue d\'ensemble', planning:'Planning', fleet:'Flotte',
-    operations:'Opérations', dcs:'Ops Sol — DCS', alerts:'Alertes',
+    operations:'Opérations', dcs:'Ops Sol — DCS', commercial:'Commercial', alerts:'Alertes',
   }
 
   return (
@@ -1516,6 +1518,16 @@ export default function Dashboard() {
             </div>
           )}
 
+          {/* ── COMMERCIAL ── */}
+          {activeSection === 'commercial' && (
+            <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
+              <SectionHeader title="COMMERCIAL" breadcrumb="OPSAIR / COMMERCIAL"/>
+              <div style={{ flex:1, overflow:'auto', padding:20 }}>
+                <CommercialPage flights={flights}/>
+              </div>
+            </div>
+          )}
+
           {/* ── ALERTES ── */}
           {activeSection === 'alerts' && (
             <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
@@ -1560,6 +1572,7 @@ export default function Dashboard() {
         <div style={{ display:'flex', height:56 }}>
           {[
             { id:'dcs',        icon:'🛂', label:'Ops Sol'  },
+            { id:'commercial', icon:'💶', label:'Commercial' },
             { id:'planning',   icon:'▦',  label:'Planning'  },
             { id:'fleet',      icon:'✈',  label:'Flotte'    },
             { id:'operations', icon:'◉',  label:'Météo'     },
